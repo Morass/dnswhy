@@ -55,9 +55,16 @@ func (s Style) Yellow(t string) string { return s.wrap("33", t) }
 func (s Style) Red(t string) string    { return s.wrap("31", t) }
 func (s Style) Cyan(t string) string   { return s.wrap("36", t) }
 
+// AttemptAnswer is what one search-domain expansion actually returned.
+type AttemptAnswer struct {
+	Name   string        `json:"name"`
+	Answer lookup.Answer `json:"answer"`
+}
+
 // Explanation is everything the explain command found out.
 type Explanation struct {
 	Result    match.Result      `json:"result"`
+	Attempts  []AttemptAnswer   `json:"attempt_answers,omitempty"`
 	HostsPath string            `json:"hosts_path"`
 	Files     resolverdir.Dir   `json:"resolver_files"`
 	System    *lookup.Answer    `json:"system,omitempty"`
@@ -78,7 +85,11 @@ func Explain(w io.Writer, e Explanation, st Style) {
 			if i == 0 {
 				lead = "  first  "
 			}
-			fmt.Fprintf(w, "%s %-34s %s\n", lead, a.Name, st.Dim("-> "+attemptTarget(a)))
+			line := fmt.Sprintf("%s %-34s %s", lead, a.Name, st.Dim("-> "+attemptTarget(a)))
+			if got, ok := e.attemptAnswer(a.Name); ok {
+				line += "   " + answerText(got, st)
+			}
+			fmt.Fprintln(w, line)
 		}
 		fmt.Fprintf(w, "  %s\n\n", st.Dim("the first of these that answers is the one you get; the rules below are for "+r.Query))
 	}
@@ -99,11 +110,18 @@ func Explain(w io.Writer, e Explanation, st Style) {
 
 	shown := 0
 	var skipped []string
+	bonjour := 0
 	for _, c := range r.Candidates {
 		if !c.Matched && shown >= 1 && !c.Wins {
 			// The resolvers that claim some other domain are noise here, but
-			// say how many there were so the list is not silently short.
-			skipped = append(skipped, c.Resolver.Domain)
+			// say how many there were so the list is not silently short. The
+			// Bonjour reverse zones every Mac carries are counted, not named:
+			// six of them in a row tell the reader nothing.
+			if c.Resolver.IsMulticast() {
+				bonjour++
+			} else {
+				skipped = append(skipped, c.Resolver.Domain)
+			}
 			continue
 		}
 		label := resolverLabel(c.Resolver)
@@ -127,8 +145,17 @@ func Explain(w io.Writer, e Explanation, st Style) {
 		step++
 		shown++
 	}
-	if n := len(skipped); n > 0 {
-		text := fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s)", n, strings.Join(skipped, ", "))
+	if n := len(skipped) + bonjour; n > 0 {
+		var text string
+		switch {
+		case len(skipped) == 0:
+			text = fmt.Sprintf("(%d Bonjour scope(s) claim names this one does not end in)", bonjour)
+		case bonjour == 0:
+			text = fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s)", n, strings.Join(skipped, ", "))
+		default:
+			text = fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s, and %d Bonjour scopes)",
+				n, strings.Join(skipped, ", "), bonjour)
+		}
 		for _, line := range wrap(text, wrapWidth-2) {
 			fmt.Fprintf(w, "  %s\n", st.Dim(line))
 		}
@@ -153,6 +180,16 @@ func Explain(w io.Writer, e Explanation, st Style) {
 			fmt.Fprintf(w, "  %s\n", line)
 		}
 	}
+}
+
+// attemptAnswer finds what one expansion returned, if it was asked.
+func (e Explanation) attemptAnswer(name string) (lookup.Answer, bool) {
+	for _, a := range e.Attempts {
+		if a.Name == name {
+			return a.Answer, true
+		}
+	}
+	return lookup.Answer{}, false
 }
 
 // attemptTarget names what would answer one search-domain expansion.

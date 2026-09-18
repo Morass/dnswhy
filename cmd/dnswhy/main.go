@@ -233,7 +233,7 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 		// one answers, so a dead first entry must not be reported as the
 		// scope failing.
 		ask := func(r dnsconf.Resolver) {
-			var last *lookup.Answer
+			var failures []lookup.Answer
 			for i := range r.Nameservers {
 				server := serverAddress(r, i)
 				if asked[server] {
@@ -248,11 +248,11 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 					exp.Direct = append(exp.Direct, got)
 					return
 				}
-				last = &got
+				failures = append(failures, got)
 			}
-			if last != nil {
-				exp.Direct = append(exp.Direct, *last)
-			}
+			// Nothing answered: show every server that was asked, so the one
+			// that appears is never a mystery.
+			exp.Direct = append(exp.Direct, failures...)
 		}
 		// By default dnswhy asks exactly what this Mac would ask and nothing
 		// else: sending a name that a private scope claims to a public
@@ -264,9 +264,30 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 		if o.compare && def != nil {
 			ask(*def)
 		}
+
+		// A name with no dot is tried as each expansion before it is tried on
+		// its own, so say what each of those attempts actually returns: for a
+		// name that does not resolve, that is the whole answer. Each question
+		// goes only to the resolver that would have been asked for it anyway.
+		for _, at := range result.Attempts {
+			if at.Name == result.Query || at.InHosts || at.Mechanism != match.Unicast {
+				continue
+			}
+			r, ok := resolverByIndex(cfg, at.WinnerIndex)
+			if !ok || len(r.Nameservers) == 0 {
+				continue
+			}
+			got := lookup.Direct(serverAddress(r, 0), at.Name, o.timeout)
+			exp.Attempts = append(exp.Attempts, render.AttemptAnswer{Name: at.Name, Answer: got})
+		}
+	}
+	var attemptAnswers []lookup.Answer
+	for _, a := range exp.Attempts {
+		attemptAnswers = append(attemptAnswers, a.Answer)
 	}
 	exp.Verdict = verdict.Lines(verdict.Input{
-		Result: result, System: exp.System, Direct: exp.Direct, Default: def, HostsPath: hosts.Path,
+		Result: result, System: exp.System, Direct: exp.Direct, AttemptAnswers: attemptAnswers,
+		Default: def, HostsPath: hosts.Path,
 	})
 
 	if o.json {
@@ -331,6 +352,16 @@ func checkName(name string) error {
 		}
 	}
 	return nil
+}
+
+// resolverByIndex finds a resolver by the number scutil printed for it.
+func resolverByIndex(cfg dnsconf.Config, index int) (dnsconf.Resolver, bool) {
+	for _, r := range cfg.Unscoped() {
+		if r.Index == index {
+			return r, true
+		}
+	}
+	return dnsconf.Resolver{}, false
 }
 
 // serverAddress is the nth nameserver of a resolver, with the resolver's own

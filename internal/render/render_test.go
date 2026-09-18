@@ -96,14 +96,14 @@ func TestAnswersAndVerdictAreShown(t *testing.T) {
 	cfg := config()
 	res := match.Explain(cfg, hostsfile.File{Path: "/etc/hosts"}, "files.corp.internal")
 	sys := lookup.Answer{Via: "system", Addresses: []string{"198.51.100.9"}}
-	direct := lookup.Answer{Via: "192.0.2.53", Status: "NXDOMAIN", Detail: "the nameserver says this name does not exist"}
+	direct := lookup.Answer{Via: "192.0.2.53", Status: "no such name", Detail: "the nameserver says this name does not exist (NXDOMAIN)"}
 	var buf bytes.Buffer
 	Explain(&buf, Explanation{
 		Result: res, HostsPath: "/etc/hosts", System: &sys, Direct: []lookup.Answer{direct},
 		Verdict: []string{"a closing sentence"},
 	}, Style{})
 	out := buf.String()
-	for _, want := range []string{"system  (every application)", "198.51.100.9", "asked 192.0.2.53 directly", "NXDOMAIN", "a closing sentence"} {
+	for _, want := range []string{"system  (every application)", "198.51.100.9", "asked 192.0.2.53 directly", "no such name", "a closing sentence"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output is missing %q:\n%s", want, out)
 		}

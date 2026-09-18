@@ -35,7 +35,7 @@ func TestScopedNameNamesTheServerToAsk(t *testing.T) {
 
 func TestSystemResolvesWhileDirectDoesNot(t *testing.T) {
 	sys := lookup.Answer{Via: "system", Addresses: []string{"198.51.100.9"}}
-	direct := lookup.Answer{Via: "192.0.2.53", Status: "NXDOMAIN"}
+	direct := lookup.Answer{Via: "192.0.2.53", Status: "no such name"}
 	got := text(Input{
 		Result:  match.Result{Query: "files.corp.internal", Mechanism: match.Unicast, Winner: scoped()},
 		System:  &sys,
@@ -130,5 +130,61 @@ func TestNoResolverAtAll(t *testing.T) {
 	got := text(Input{Result: match.Result{Query: "example.com", Mechanism: match.NoResolver}})
 	if !strings.Contains(got, "no default nameserver") {
 		t.Errorf("verdict = %s", got)
+	}
+}
+
+// A name that resolves to nothing must say what that means, which is the case
+// people most often run the tool for.
+func TestNothingResolvedIsExplained(t *testing.T) {
+	sys := lookup.Answer{Via: "system", Status: "no answer"}
+	cases := []struct {
+		name   string
+		direct lookup.Answer
+		want   string
+	}{
+		{"no such name", lookup.Answer{Via: "192.0.2.53", Status: "no such name"}, "does not exist"},
+		{"no address", lookup.Answer{Via: "192.0.2.53", Status: "no address"}, "no IPv4 or IPv6 address"},
+		{"timeout", lookup.Answer{Via: "192.0.2.53", Status: "timeout"}, "did not answer in time"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := text(Input{
+				Result:  match.Result{Query: "nope.example", Mechanism: match.Unicast, Winner: defaultResolver()},
+				System:  &sys,
+				Direct:  []lookup.Answer{c.direct},
+				Default: defaultResolver(),
+			})
+			if !strings.Contains(got, c.want) {
+				t.Errorf("verdict is missing %q:\n%s", c.want, got)
+			}
+		})
+	}
+}
+
+func TestSingleLabelFailureExplainsTheBareWord(t *testing.T) {
+	sys := lookup.Answer{Via: "system", Status: "no answer"}
+	got := text(Input{
+		Result:         match.Result{Query: "google", SingleLabel: true, Mechanism: match.Unicast, Winner: defaultResolver()},
+		System:         &sys,
+		Direct:         []lookup.Answer{{Via: "192.0.2.53", Status: "no address"}},
+		AttemptAnswers: []lookup.Answer{{Via: "198.51.100.53", Status: "no such name"}},
+		Default:        defaultResolver(),
+	})
+	if !strings.Contains(got, "not a domain name") || !strings.Contains(got, "write it in full") {
+		t.Errorf("a bare word that fails should be explained:\n%s", got)
+	}
+}
+
+// A name answered from the hosts file has resolved; the "nothing resolved"
+// paragraph must not appear beside it.
+func TestHostsAnswerIsNotCalledAFailure(t *testing.T) {
+	sys := lookup.Answer{Via: "system", Status: "no answer"}
+	got := text(Input{
+		Result:    match.Result{Query: "pinned.example", Mechanism: match.FromHosts},
+		System:    &sys,
+		HostsPath: "/etc/hosts",
+	})
+	if strings.Contains(got, "Nothing here is broken") || strings.Contains(got, "no nameserver was asked") {
+		t.Errorf("a hosts answer is not a failure:\n%s", got)
 	}
 }

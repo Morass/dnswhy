@@ -13,9 +13,12 @@ import (
 
 // Input is everything the verdict is drawn from.
 type Input struct {
-	Result    match.Result
-	System    *lookup.Answer
-	Direct    []lookup.Answer // in the order they were asked
+	Result match.Result
+	System *lookup.Answer
+	Direct []lookup.Answer // in the order they were asked
+	// AttemptAnswers are the replies for the search-domain expansions of a
+	// single-label name.
+	AttemptAnswers []lookup.Answer
 	Default   *dnsconf.Resolver
 	HostsPath string
 }
@@ -99,12 +102,68 @@ func Lines(in Input) []string {
 
 	// A name answered from /etc/hosts never reaches a resolver, so nothing
 	// about the resolver that would have answered belongs in the verdict.
+	// Nothing resolved at all. This is the most common thing a person types
+	// dnswhy for, and saying only "no answer" twice helps nobody.
+	if in.System != nil && !in.System.OK() && r.Mechanism != match.FromHosts {
+		out = append(out, nothingResolved(in)...)
+	}
+
 	if winner != nil && scoped && !winner.Reachable && r.Mechanism != match.FromHosts {
 		out = append(out, fmt.Sprintf("The %s scope is marked not reachable, so this name fails while the", winner.Domain))
 		out = append(out, "connection that provides it (a VPN, a container, a local dnsmasq) is down -")
 		out = append(out, "it does not fall back to the default nameservers.")
 	}
 
+	return out
+}
+
+// nothingResolved explains a name that produced no address, using the statuses
+// that actually came back rather than a guess.
+func nothingResolved(in Input) []string {
+	var out []string
+	statuses := map[string]string{} // status -> the server that said it
+	for _, d := range in.Direct {
+		if !d.OK() && d.Status != "" {
+			statuses[d.Status] = d.Via
+		}
+	}
+	for _, a := range in.AttemptAnswers {
+		if !a.OK() && a.Status != "" {
+			statuses[a.Status] = a.Via
+		}
+	}
+
+	name := in.Result.Query
+	switch {
+	case len(statuses) == 0:
+		out = append(out, fmt.Sprintf("Nothing resolved %s, and no nameserver was asked to say why.", name))
+		out = append(out, "Run it again without --offline to see what the nameserver answers.")
+	case statuses["no address"] != "":
+		out = append(out, fmt.Sprintf("%s exists in DNS but has no IPv4 or IPv6 address, so there is nothing", name))
+		out = append(out, "to connect to. A name can exist and carry only mail or text records.")
+	case statuses["no such name"] != "":
+		out = append(out, fmt.Sprintf("Nothing here is broken: %s says this name does not exist, which", statuses["no such name"]))
+		out = append(out, "is an answer, not a failure. Check the spelling, or whether the name only")
+		out = append(out, "exists on a network this Mac is not on right now.")
+	case statuses["timeout"] != "" || statuses["unreachable"] != "":
+		server := statuses["timeout"]
+		if server == "" {
+			server = statuses["unreachable"]
+		}
+		out = append(out, fmt.Sprintf("%s did not answer in time, so this is a connection problem rather", server))
+		out = append(out, "than a naming one: the nameserver, or the link to it, is down.")
+	default:
+		for status, via := range statuses {
+			out = append(out, fmt.Sprintf("%s answered %q and gave no address.", via, status))
+			break
+		}
+	}
+
+	if in.Result.SingleLabel {
+		out = append(out, "A word with no dot is not a domain name: macOS tries it with each search")
+		out = append(out, "domain first, as listed above, and then on its own. If you meant a name on")
+		out = append(out, "the internet, write it in full.")
+	}
 	return out
 }
 

@@ -68,8 +68,11 @@ func TestDirectReadsAnAnswer(t *testing.T) {
 func TestDirectReportsNXDOMAIN(t *testing.T) {
 	server := startServer(t, func(q []byte) []byte { return reply(q, 3, 0, nil) })
 	got := Direct(server, "absent.example", time.Second)
-	if got.Status != "NXDOMAIN" {
-		t.Errorf("status = %q, want NXDOMAIN", got.Status)
+	if got.Status != "no such name" {
+		t.Errorf("status = %q, want 'no such name'", got.Status)
+	}
+	if !strings.Contains(got.Detail, "NXDOMAIN") {
+		t.Errorf("detail should still name the DNS term: %q", got.Detail)
 	}
 	if got.OK() {
 		t.Error("NXDOMAIN carries no addresses")

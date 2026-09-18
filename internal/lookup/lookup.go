@@ -61,7 +61,7 @@ func System(name string, timeout time.Duration) Answer {
 			a.Addresses = parseDSCacheUtil(string(out))
 			if len(a.Addresses) == 0 {
 				a.Status = "no answer"
-				a.Detail = "the system resolver returned nothing for this name"
+				a.Detail = "nothing your applications can connect to"
 			}
 			return a
 		}
@@ -233,7 +233,7 @@ func parseReply(msg []byte, question []byte) (addrs, cnames []string, status, de
 	case 2:
 		return nil, nil, "SERVFAIL", "the nameserver failed to answer"
 	case 3:
-		return nil, nil, "NXDOMAIN", "the nameserver says this name does not exist"
+		return nil, nil, "no such name", "the nameserver says this name does not exist (NXDOMAIN)"
 	case 5:
 		return nil, nil, "refused", "the nameserver refused the question"
 	default:
@@ -297,7 +297,7 @@ func parseReply(msg []byte, question []byte) (addrs, cnames []string, status, de
 		if truncated {
 			return nil, cnames, "truncated", "the reply did not fit in a UDP packet"
 		}
-		return nil, cnames, "no answer", "the nameserver knows the zone but gave no address of this kind"
+		return nil, cnames, "no address", "the name exists, but it has no address record of this kind"
 	}
 	return addrs, cnames, "", ""
 }
