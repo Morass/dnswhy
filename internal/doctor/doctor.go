@@ -62,6 +62,11 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 		r.Findings = append(r.Findings, Finding{Level: l, Title: title, Detail: detail})
 	}
 
+	if cfg.Incomplete {
+		add(Warn, "The configuration could not be read to the end",
+			"A line was too long to parse, so a resolver may be missing from everything below.")
+	}
+
 	unscoped := cfg.Unscoped()
 	def := match.DefaultResolver(cfg)
 	switch {
@@ -115,9 +120,10 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 		for _, res := range list {
 			parts = append(parts, fmt.Sprintf("resolver #%d (%s)", res.Index, joinOr(res.Nameservers, "no nameserver")))
 		}
-		add(Warn, fmt.Sprintf("Two resolvers claim %q", domain),
+		add(Note, fmt.Sprintf("Two resolvers claim %q", domain),
 			strings.Join(parts, " and ")+".",
-			"The lower order value wins; the other is never asked.")
+			"resolver(5) sends the query to each of them in turn, in ascending order value, so the second is a fallback rather than dead configuration.",
+			"It is worth checking only if you did not mean to configure two.")
 	}
 
 	// Resolver files that are not in effect.
@@ -130,10 +136,18 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 	seenFileDomain := map[string]string{}
 	for _, f := range dir.Files {
 		if prev, dup := seenFileDomain[f.Domain]; dup {
-			add(Warn, fmt.Sprintf("%s and %s both claim %q", prev, f.Name, f.Domain),
-				"One of them has no effect. Delete the one you did not mean to keep.")
+			add(Note, fmt.Sprintf("%s and %s both claim %q", prev, f.Name, f.Domain),
+				"Both are used: queries go to each in turn, in ascending search_order.",
+				"Set search_order in each file if the order matters to you.")
 		}
 		seenFileDomain[f.Domain] = f.Name
+
+		if f.Err != "" {
+			add(Warn, fmt.Sprintf("%s could not be read", f.Path),
+				f.Err,
+				"Whatever it configures is missing from this review.")
+			continue
+		}
 
 		if len(f.Nameservers) == 0 && len(f.SearchDomains) > 0 {
 			add(Note, fmt.Sprintf("%s adds a search domain and nothing else", f.Path),
@@ -145,7 +159,7 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 		}
 		if len(f.Unknown) > 0 {
 			detail := []string{
-				strings.Join(f.Unknown, " / "),
+				"unrecognised keyword(s): " + strings.Join(f.Unknown, ", "),
 				"Only nameserver, domain, search, port, timeout and search_order are read.",
 			}
 			if len(f.Nameservers) == 0 && len(f.SearchDomains) == 0 {
@@ -211,6 +225,11 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 				break
 			}
 		}
+	}
+
+	for _, bad := range hosts.Invalid {
+		add(Warn, fmt.Sprintf("Line %d of %s does not start with an address", bad.Line, hosts.Path),
+			fmt.Sprintf("It begins with %q, so the system resolver ignores the whole line.", bad.Address))
 	}
 
 	if ifs := cfg.InterfaceScoped(); len(ifs) > 0 {

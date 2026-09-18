@@ -16,6 +16,10 @@ import (
 
 // File is one file in the resolver directory.
 type File struct {
+	// Err is why the file could not be read or parsed, if it could not. The
+	// file still appears, so a configuration that is partly unreadable is
+	// reported rather than silently shortened.
+	Err string `json:"error,omitempty"`
 	Path          string   `json:"path"`
 	Name          string   `json:"name"`   // the file name, which is the domain by default
 	Domain        string   `json:"domain"` // the domain it actually claims
@@ -24,7 +28,11 @@ type File struct {
 	Port          int      `json:"port,omitempty"`
 	Timeout       int      `json:"timeout,omitempty"`
 	SearchOrder   int      `json:"search_order,omitempty"`
-	Unknown       []string `json:"unknown,omitempty"` // lines that are not resolv.conf keywords
+	// Unknown holds the first word of each line that is not a resolv.conf
+	// keyword. Only the keyword is kept, never the rest of the line: a file in
+	// this directory can be anything at all, and a tool that prints it would
+	// print whatever it found.
+	Unknown []string `json:"unknown,omitempty"`
 }
 
 // Dir is a parsed resolver directory.
@@ -53,13 +61,44 @@ func Load(dir string) (Dir, error) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		f, err := loadFile(filepath.Join(dir, name), name)
+		path := filepath.Join(dir, name)
+		// Only ordinary files are read. A symlink here would make the tool
+		// print whatever it points at, and a fifo would block forever.
+		info, err := os.Lstat(path)
 		if err != nil {
-			continue // unreadable files are reported by the doctor, not fatal here
+			d.Files = append(d.Files, File{Path: path, Name: name, Domain: strings.ToLower(name), Err: err.Error()})
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			d.Files = append(d.Files, File{
+				Path: path, Name: name, Domain: strings.ToLower(name),
+				Err: "not an ordinary file (" + kind(info.Mode()) + "), so it was not read",
+			})
+			continue
+		}
+		f, err := loadFile(path, name)
+		if err != nil {
+			f.Err = err.Error()
 		}
 		d.Files = append(d.Files, f)
 	}
 	return d, nil
+}
+
+// kind names a file type in words a reader recognises.
+func kind(m os.FileMode) string {
+	switch {
+	case m&os.ModeSymlink != 0:
+		return "a symbolic link"
+	case m&os.ModeNamedPipe != 0:
+		return "a named pipe"
+	case m&os.ModeSocket != 0:
+		return "a socket"
+	case m&os.ModeDevice != 0:
+		return "a device"
+	default:
+		return "not a regular file"
+	}
 }
 
 func loadFile(path, name string) (File, error) {
@@ -112,7 +151,7 @@ func loadFile(path, name string) (File, error) {
 			// resolv.conf keywords macOS accepts but that do not change which
 			// resolver is chosen.
 		default:
-			f.Unknown = append(f.Unknown, strings.TrimSpace(line))
+			f.Unknown = append(f.Unknown, fields[0])
 		}
 	}
 	return f, sc.Err()

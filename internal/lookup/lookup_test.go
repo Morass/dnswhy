@@ -126,7 +126,7 @@ func TestParseReplySurvivesMalformedMessages(t *testing.T) {
 	}
 	for name, msg := range cases {
 		t.Run(name, func(t *testing.T) {
-			addrs, _, status, _ := parseReply(msg, q[0:2])
+			addrs, _, status, _ := parseReply(msg, q)
 			if len(addrs) != 0 {
 				t.Errorf("malformed message yielded addresses: %v", addrs)
 			}
@@ -141,7 +141,7 @@ func TestParseReplyRejectsOversizedRecordLength(t *testing.T) {
 	q, _ := buildQuery("example.com", typeA)
 	rec := []byte{0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0xff, 0xff}
 	msg := reply(q, 0, 0, [][]byte{rec})
-	_, _, status, _ := parseReply(msg, q[0:2])
+	_, _, status, _ := parseReply(msg, q)
 	if status != "bad reply" {
 		t.Errorf("status = %q, want 'bad reply'", status)
 	}
@@ -150,7 +150,7 @@ func TestParseReplyRejectsOversizedRecordLength(t *testing.T) {
 func TestParseReplyReportsTruncation(t *testing.T) {
 	q, _ := buildQuery("example.com", typeA)
 	msg := reply(q, 0, 0x02, nil) // TC set, no answers
-	_, _, status, _ := parseReply(msg, q[0:2])
+	_, _, status, _ := parseReply(msg, q)
 	if status != "truncated" {
 		t.Errorf("status = %q, want truncated", status)
 	}
@@ -187,5 +187,88 @@ func TestAnswerSummary(t *testing.T) {
 	}
 	if got := (Answer{}).Summary(); got != "no answer" {
 		t.Errorf("summary = %q", got)
+	}
+}
+
+// A reply may only answer with records that belong to the question. A record
+// for some other name riding along in the answer section is not an answer.
+func TestParseReplyIgnoresRecordsForAnotherName(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	// An A record owned by the root, as a hostile server might send.
+	rec := []byte{0x00, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 1}
+	msg := reply(q, 0, 0, [][]byte{rec})
+	addrs, _, _, _ := parseReply(msg, q)
+	if len(addrs) != 0 {
+		t.Errorf("a record for another name was accepted: %v", addrs)
+	}
+}
+
+func TestParseReplyRejectsADifferentQuestion(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	other, _ := buildQuery("evil.example", typeA)
+	msg := reply(other, 0, 0, [][]byte{aRecord(net.ParseIP("203.0.113.1"))})
+	msg[0], msg[1] = q[0], q[1] // same transaction id, different question
+	_, _, status, _ := parseReply(msg, q)
+	if status != "bad reply" {
+		t.Errorf("status = %q, want 'bad reply'", status)
+	}
+}
+
+func TestParseReplyRejectsAQuestionPacket(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	msg := reply(q, 0, 0, nil)
+	msg[2] &^= 0x80 // clear the response bit
+	_, _, status, _ := parseReply(msg, q)
+	if status != "bad reply" {
+		t.Errorf("status = %q, want 'bad reply'", status)
+	}
+}
+
+func TestParseReplyIgnoresRecordsOutsideClassIN(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	rec := []byte{0xc0, 0x0c, 0, 1, 0, 3, 0, 0, 0, 60, 0, 4, 203, 0, 113, 2} // class CHAOS
+	msg := reply(q, 0, 0, [][]byte{rec})
+	addrs, _, _, _ := parseReply(msg, q)
+	if len(addrs) != 0 {
+		t.Errorf("a record outside class IN was accepted: %v", addrs)
+	}
+}
+
+func TestParseReplyFollowsACNAMEChain(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	// example.com CNAME target.example, then an A record owned by target.example.
+	cname := []byte{0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, 0, 16, 6, 't', 'a', 'r', 'g', 'e', 't', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0}
+	a := []byte{6, 't', 'a', 'r', 'g', 'e', 't', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 3}
+	msg := reply(q, 0, 0, [][]byte{cname, a})
+	addrs, cnames, _, _ := parseReply(msg, q)
+	if len(addrs) != 1 || addrs[0] != "203.0.113.3" {
+		t.Errorf("addresses = %v, want the address behind the CNAME", addrs)
+	}
+	if len(cnames) != 1 || cnames[0] != "target.example" {
+		t.Errorf("cnames = %v", cnames)
+	}
+}
+
+func TestTruncationIsKeptEvenWithAnAddress(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	msg := reply(q, 0, 0x02, [][]byte{aRecord(net.ParseIP("203.0.113.4"))})
+	addrs, _, status, _ := parseReply(msg, q)
+	if len(addrs) != 1 || status != "truncated" {
+		t.Errorf("addresses = %v, status = %q, want the address and a truncation warning", addrs, status)
+	}
+}
+
+// Label types 0x40 and 0x80 are reserved: reading the byte as a length would
+// walk off into the rest of the packet.
+func TestParseReplyRejectsReservedLabelTypes(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	for _, lead := range []byte{0x40, 0x80} {
+		msg := append(append([]byte{}, q...), lead, 0x01, 0x02, 0x03)
+		msg[2], msg[3] = 0x81, 0x80
+		msg[6], msg[7] = 0, 1 // claim one answer
+		_, _, status, _ := parseReply(msg, q)
+		if status != "bad reply" {
+			t.Errorf("label type %#x gave status %q, want 'bad reply'", lead, status)
+		}
 	}
 }

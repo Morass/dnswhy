@@ -46,7 +46,7 @@ func Lines(in Input) []string {
 
 	winner := r.Winner
 	scoped := winner != nil && winner.Domain != "" && !winner.IsMulticast()
-	if scoped && in.Default != nil && winner.Index != in.Default.Index {
+	if scoped && in.Default != nil && winner.Index != in.Default.Index && r.Mechanism != match.FromHosts {
 		out = append(out, fmt.Sprintf("%s is answered by the %s scope, which dig knows nothing about:", name, winner.Domain))
 		out = append(out, fmt.Sprintf("dig reads /etc/resolv.conf and would ask %s. To ask what your", strings.Join(in.Default.Nameservers, " or ")))
 		if len(winner.Nameservers) > 0 {
@@ -68,8 +68,9 @@ func Lines(in Input) []string {
 				out = append(out, fmt.Sprintf("%s.", in.HostsPath))
 			case sys.OK() && d.OK() && !sameAddrs(sys.Addresses, d.Addresses):
 				out = append(out, fmt.Sprintf("Your applications get %s while %s says %s.", strings.Join(sys.Addresses, ", "), d.Via, strings.Join(d.Addresses, ", ")))
-				out = append(out, "The two answers come from different nameservers, so whichever you trust,")
-				out = append(out, "make sure you are testing with the same one.")
+				out = append(out, "Two answers for one name: either they came from different nameservers, or")
+				out = append(out, "one of them is a cached copy of an older answer. Which it is, this tool")
+				out = append(out, "cannot see from here.")
 			}
 		}
 	}
@@ -87,7 +88,9 @@ func Lines(in Input) []string {
 		}
 	}
 
-	if winner != nil && scoped && !winner.Reachable {
+	// A name answered from /etc/hosts never reaches a resolver, so nothing
+	// about the resolver that would have answered belongs in the verdict.
+	if winner != nil && scoped && !winner.Reachable && r.Mechanism != match.FromHosts {
 		out = append(out, fmt.Sprintf("The %s scope is marked not reachable, so this name fails while the", winner.Domain))
 		out = append(out, "connection that provides it (a VPN, a container, a local dnsmasq) is down -")
 		out = append(out, "it does not fall back to the default nameservers.")

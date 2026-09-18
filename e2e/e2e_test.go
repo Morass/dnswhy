@@ -255,3 +255,116 @@ func TestOutputCarriesNoEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// A hostname is the only thing the tool accepts: control characters would be
+// replayed into the terminal, and shell metacharacters would end up inside the
+// dig command the tool tells the reader to copy.
+func TestHostileNamesAreRejected(t *testing.T) {
+	for _, name := range []string{
+		"evil\x1b[2Jexample.com",
+		"$(id).local",
+		"a b.example",
+		"example..com",
+		"-e; rm -rf /",
+	} {
+		got := explain(t, name)
+		if got.code != 2 {
+			t.Errorf("%q: exit = %d, want 2\n%s%s", name, got.code, got.stdout, got.stderr)
+		}
+		if strings.Contains(got.stdout, "\x1b[2J") {
+			t.Errorf("%q: a control sequence reached stdout", name)
+		}
+	}
+}
+
+func TestDoctorJSONStillExitsOne(t *testing.T) {
+	got := runIn(t, append([]string{"doctor", "--json"}, fixtures("vpn.scutil")...)...)
+	if got.code != 1 {
+		t.Errorf("exit = %d, want 1: the format must not change the status", got.code)
+	}
+}
+
+func TestNonPositiveTimeoutIsRejected(t *testing.T) {
+	got := explain(t, "example.com", "--timeout", "0s")
+	if got.code != 2 {
+		t.Errorf("exit = %d, want 2", got.code)
+	}
+}
+
+// A resolver directory is only ever read: a symlink there would print whatever
+// it points at, and a fifo would block forever.
+func TestResolverDirectoryReadsOnlyOrdinaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("password hunter2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolvers := filepath.Join(dir, "resolver")
+	if err := os.Mkdir(resolvers, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(resolvers, "corp.internal")); err != nil {
+		t.Fatal(err)
+	}
+	got := runIn(t, "doctor", "--scutil-file", filepath.Join("..", "testdata", "simple.scutil"),
+		"--resolver-dir", resolvers, "--hosts-file", filepath.Join(dir, "no-hosts"))
+	if strings.Contains(got.stdout, "hunter2") || strings.Contains(got.stdout, "password") {
+		t.Errorf("the contents of a linked file were printed:\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "symbolic link") {
+		t.Errorf("the link should be reported as not read:\n%s", got.stdout)
+	}
+}
+
+// An unrecognised line in a resolver file may be anything at all, so only its
+// first word is ever shown.
+func TestUnknownResolverLinesAreNotEchoed(t *testing.T) {
+	dir := t.TempDir()
+	resolvers := filepath.Join(dir, "resolver")
+	if err := os.Mkdir(resolvers, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resolvers, "corp.internal"), []byte("token abcd-secret-value\nnameserver 198.51.100.53\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := runIn(t, "doctor", "--scutil-file", filepath.Join("..", "testdata", "vpn.scutil"),
+		"--resolver-dir", resolvers, "--hosts-file", filepath.Join(dir, "no-hosts"))
+	if strings.Contains(got.stdout, "abcd-secret-value") {
+		t.Errorf("the rest of an unknown line was printed:\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "token") {
+		t.Errorf("the unknown keyword should still be named:\n%s", got.stdout)
+	}
+}
+
+// A hosts line that does not start with an address is ignored by the system
+// resolver, so it must not be reported as the answer.
+func TestInvalidHostsLineIsNotAnAnswer(t *testing.T) {
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("not-an-address example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := runIn(t, "example.com", "--scutil-file", filepath.Join("..", "testdata", "simple.scutil"),
+		"--hosts-file", hosts, "--resolver-dir", filepath.Join(dir, "none"), "--offline")
+	if strings.Contains(got.stdout, "Answered from") {
+		t.Errorf("an invalid hosts line was treated as an answer:\n%s", got.stdout)
+	}
+	doc := runIn(t, "doctor", "--scutil-file", filepath.Join("..", "testdata", "simple.scutil"),
+		"--hosts-file", hosts, "--resolver-dir", filepath.Join(dir, "none"))
+	if !strings.Contains(doc.stdout, "does not start with an address") {
+		t.Errorf("doctor should report the line:\n%s", doc.stdout)
+	}
+}
+
+// After a hosts file answers, nothing about the resolver that would otherwise
+// have been asked belongs in the verdict.
+func TestHostsAnswerDoesNotDragInScopeWarnings(t *testing.T) {
+	got := explain(t, "pinned.corp.internal")
+	if strings.Contains(got.stdout, "does not fall back") {
+		t.Errorf("a hosts answer cannot also fail in a scope:\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "No nameserver is asked at all") {
+		t.Errorf("the hosts verdict is missing:\n%s", got.stdout)
+	}
+}

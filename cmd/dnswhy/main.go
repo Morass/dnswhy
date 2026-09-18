@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -35,6 +36,7 @@ const (
 
 type options struct {
 	json        bool
+	compare     bool
 	offline     bool
 	noColour    bool
 	timeout     time.Duration
@@ -45,6 +47,7 @@ type options struct {
 
 func (o *options) register(fs *flag.FlagSet) {
 	fs.BoolVar(&o.json, "json", false, "print the findings as JSON")
+	fs.BoolVar(&o.compare, "compare", false, "also ask the default nameserver, even for a name a private scope claims")
 	fs.BoolVar(&o.offline, "offline", false, "explain the configuration without asking any nameserver")
 	fs.BoolVar(&o.noColour, "no-color", false, "never colour the output")
 	fs.DurationVar(&o.timeout, "timeout", 3*time.Second, "how long to wait for each answer")
@@ -171,7 +174,7 @@ func load(o options) (dnsconf.Config, resolverdir.Dir, hostsfile.File, error) {
 		cfg = dnsconf.Parse(string(b))
 	} else {
 		var err error
-		cfg, err = dnsconf.Run()
+		cfg, err = dnsconf.Run(o.timeout)
 		if err != nil {
 			return cfg, resolverdir.Dir{}, hostsfile.File{}, fmt.Errorf("running scutil --dns: %w (dnswhy needs macOS, or --scutil-file)", err)
 		}
@@ -202,9 +205,13 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 		explainUsage(stderr)
 		return 2
 	}
-	name := strings.TrimSuffix(strings.TrimSpace(fs.Arg(0)), ".")
-	if name == "" {
-		fmt.Fprintln(stderr, "dnswhy: give me a name to explain")
+	name := strings.TrimSpace(fs.Arg(0))
+	if err := checkName(name); err != nil {
+		fmt.Fprintf(stderr, "dnswhy: %v\n", err)
+		return 2
+	}
+	if o.timeout <= 0 {
+		fmt.Fprintln(stderr, "dnswhy: --timeout must be longer than zero")
 		return 2
 	}
 
@@ -222,17 +229,29 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 		sys := lookup.System(name, o.timeout)
 		exp.System = &sys
 		asked := map[string]bool{}
-		// What a plain `dig` would do: ask the default nameserver.
-		if def != nil && len(def.Nameservers) > 0 {
-			server := serverAddress(*def)
-			exp.Direct = append(exp.Direct, lookup.Direct(server, name, o.timeout))
-			asked[server] = true
-		}
-		// And what the resolver that actually wins says, when it is another one.
-		if w := result.Winner; w != nil && len(w.Nameservers) > 0 {
-			if server := serverAddress(*w); !asked[server] {
-				exp.Direct = append(exp.Direct, lookup.Direct(server, name, o.timeout))
+		ask := func(r dnsconf.Resolver) {
+			if len(r.Nameservers) == 0 {
+				return
 			}
+			server := serverAddress(r)
+			if asked[server] {
+				return
+			}
+			asked[server] = true
+			// name keeps any trailing dot the user typed: it tells the system
+			// resolver the name is absolute and must not be expanded with a
+			// search domain.
+			exp.Direct = append(exp.Direct, lookup.Direct(server, name, o.timeout))
+		}
+		// By default dnswhy asks exactly what this Mac would ask and nothing
+		// else: sending a name that a private scope claims to a public
+		// nameserver would hand an internal hostname to a stranger. --compare
+		// is the way to ask anyway, and says so in the help.
+		if result.Mechanism == match.Unicast && result.Winner != nil {
+			ask(*result.Winner)
+		}
+		if o.compare && def != nil {
+			ask(*def)
 		}
 	}
 	exp.Verdict = verdict.Lines(verdict.Input{
@@ -244,6 +263,35 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	render.Explain(stdout, exp, style(o, stdout))
 	return 0
+}
+
+// checkName rejects anything that is not a hostname. It keeps control
+// characters out of the terminal, and keeps shell metacharacters out of the
+// commands the tool prints for the reader to copy.
+func checkName(name string) error {
+	if name == "" {
+		return errors.New("give me a name to explain")
+	}
+	if len(name) > 253 {
+		return errors.New("a hostname cannot be longer than 253 characters")
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '.' || r == '_':
+		default:
+			return fmt.Errorf("%q is not a hostname: only letters, digits, '-', '_' and '.' are allowed (use punycode for an international name)", name)
+		}
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		if label == "" {
+			return fmt.Errorf("%q has an empty label", name)
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("%q has a label longer than 63 characters", name)
+		}
+	}
+	return nil
 }
 
 // serverAddress is the first nameserver of a resolver, with the resolver's own
@@ -283,9 +331,13 @@ func doctorCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	rep := doctor.Run(cfg, dir, hosts)
 	if o.json {
-		return writeJSON(stdout, stderr, rep)
+		if code := writeJSON(stdout, stderr, rep); code != 0 {
+			return code
+		}
+	} else {
+		render.Doctor(stdout, rep, style(o, stdout))
 	}
-	render.Doctor(stdout, rep, style(o, stdout))
+	// The exit status is part of the interface in both formats.
 	if _, _, warn := rep.Counts(); warn > 0 {
 		return 1
 	}
@@ -353,6 +405,7 @@ Examples:
 
 Common flags (see `+"`dnswhy help explain`"+` for all of them):
   --offline            do not ask any nameserver, only explain the configuration
+  --compare            also ask the default nameserver, even for a name a scope claims
   --json               print JSON instead of text
 `)
 }
@@ -371,7 +424,12 @@ Examples:
   dnswhy build                     a single-label name and the search domains
   dnswhy example.com --offline     no lookups, just the rules
 
+  By default it asks only the nameserver this Mac would ask for that name, so a
+  name that a VPN or container scope claims is never sent to a public resolver.
+  --compare asks the default nameserver as well, which is what a plain dig does.
+
 Flags:
+  --compare                 also ask the default nameserver (sends the name outside its scope)
   --offline                 explain the configuration without asking anything
   --json                    print the findings as JSON
   --timeout <duration>      how long to wait for each answer (default 3s)

@@ -59,11 +59,27 @@ type Candidate struct {
 	Why    string `json:"why"`
 }
 
+// Attempt is one name the resolver will actually try, with the resolver that
+// would answer it. A name with no dot is tried with each search domain
+// appended before it is tried on its own, and those expanded names can be
+// claimed by a different scope than the bare one.
+type Attempt struct {
+	Name         string    `json:"name"`
+	WinnerIndex  int       `json:"winner_index,omitempty"`
+	WinnerDomain string    `json:"winner_domain,omitempty"`
+	Mechanism    Mechanism `json:"mechanism"`
+	InHosts      bool      `json:"in_hosts,omitempty"`
+}
+
 // Result is the whole explanation for one name.
 type Result struct {
-	Query       string             `json:"query"`
+	Query string `json:"query"`
+	// Absolute is true when the user wrote a trailing dot, which tells the
+	// resolver not to append any search domain.
+	Absolute    bool               `json:"absolute"`
 	SingleLabel bool               `json:"single_label"`
 	Qualified   []string           `json:"qualified,omitempty"`
+	Attempts    []Attempt          `json:"attempts,omitempty"`
 	Hosts       []hostsfile.Entry  `json:"hosts,omitempty"`
 	Candidates  []Candidate        `json:"candidates"`
 	Winner      *dnsconf.Resolver  `json:"winner,omitempty"`
@@ -87,12 +103,36 @@ func SearchDomains(cfg dnsconf.Config) []string {
 	return out
 }
 
-// Explain works out what will answer name.
+// Explain works out what will answer name, including each name a single-label
+// query is expanded to.
 func Explain(cfg dnsconf.Config, hosts hostsfile.File, name string) Result {
-	name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
-	res := Result{Query: name, Mechanism: NoResolver}
+	res := explainOne(cfg, hosts, name)
+	// Each search-domain expansion is a different question and can land on a
+	// different resolver, so work out where each one would go. explainOne is
+	// used rather than Explain: an expanded name always contains a dot, but
+	// recursing here would still be a trap for the next change.
+	if res.SingleLabel {
+		for _, q := range append(append([]string{}, res.Qualified...), res.Query) {
+			sub := explainOne(cfg, hosts, q)
+			a := Attempt{Name: q, Mechanism: sub.Mechanism, InHosts: len(sub.Hosts) > 0}
+			if sub.Winner != nil {
+				a.WinnerIndex = sub.Winner.Index
+				a.WinnerDomain = sub.Winner.Domain
+			}
+			res.Attempts = append(res.Attempts, a)
+		}
+	}
+	return res
+}
 
-	res.SingleLabel = !strings.Contains(name, ".")
+// explainOne is Explain for exactly the name given, with no expansion.
+func explainOne(cfg dnsconf.Config, hosts hostsfile.File, name string) Result {
+	name = strings.ToLower(strings.TrimSpace(name))
+	absolute := strings.HasSuffix(name, ".")
+	name = strings.TrimSuffix(name, ".")
+	res := Result{Query: name, Absolute: absolute, Mechanism: NoResolver}
+
+	res.SingleLabel = !strings.Contains(name, ".") && !absolute
 	if res.SingleLabel {
 		for _, s := range SearchDomains(cfg) {
 			res.Qualified = append(res.Qualified, name+"."+s)

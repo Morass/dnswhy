@@ -20,9 +20,12 @@ package dnsconf
 
 import (
 	"bufio"
+	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Resolver is one resolver block.
@@ -49,6 +52,9 @@ type Resolver struct {
 // Config is a whole `scutil --dns` dump.
 type Config struct {
 	Resolvers []Resolver `json:"resolvers"`
+	// Incomplete is true when the dump could not be read to the end, so
+	// anything drawn from it may be missing a resolver.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // HasOption reports whether the resolver carries the named option, e.g. "mdns".
@@ -91,10 +97,16 @@ func (c Config) InterfaceScoped() []Resolver {
 	return out
 }
 
-// Run reads the live configuration from scutil.
-func Run() (Config, error) {
-	out, err := exec.Command("scutil", "--dns").Output()
+// Run reads the live configuration from scutil. It is given a deadline because
+// a wedged configuration daemon must not wedge the tool as well.
+func Run(timeout time.Duration) (Config, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "scutil", "--dns").Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return Config{}, fmt.Errorf("scutil --dns did not answer within %s", timeout)
+		}
 		return Config{}, err
 	}
 	return Parse(string(out)), nil
@@ -181,5 +193,8 @@ func Parse(text string) Config {
 		}
 	}
 	flush()
+	if sc.Err() != nil {
+		cfg.Incomplete = true
+	}
 	return cfg
 }

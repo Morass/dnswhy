@@ -3,6 +3,7 @@ package dnsconf
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +86,15 @@ resolver #1
 func TestParseEmptyInput(t *testing.T) {
 	if got := Parse(""); len(got.Resolvers) != 0 {
 		t.Errorf("empty input gave %d resolvers", len(got.Resolvers))
+	}
+}
+
+// A dump that cannot be read to the end must say so rather than quietly drop
+// the resolvers it did not reach.
+func TestOversizedLineMarksTheConfigurationIncomplete(t *testing.T) {
+	huge := "DNS configuration\n\nresolver #1\n  nameserver[0] : " + strings.Repeat("9", 5*1024*1024) + "\n"
+	cfg := Parse(huge)
+	if !cfg.Incomplete {
+		t.Error("a dump that could not be parsed to the end must be marked incomplete")
 	}
 }

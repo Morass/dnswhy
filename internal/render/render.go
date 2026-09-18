@@ -71,16 +71,20 @@ func Explain(w io.Writer, e Explanation, st Style) {
 	r := e.Result
 	fmt.Fprintf(w, "%s  %s\n\n", st.Bold("Question"), st.Bold(r.Query))
 
-	if r.SingleLabel && len(r.Qualified) > 0 {
-		heading := "A name with no dot, so search domains apply"
+	if len(r.Attempts) > 0 {
+		heading := "A name with no dot, so it is tried with each search domain first"
 		if len(r.Hosts) > 0 {
 			heading += " - though " + e.HostsPath + " answers first"
 		}
 		fmt.Fprintf(w, "%s\n", st.Bold(heading))
-		for _, q := range r.Qualified {
-			fmt.Fprintf(w, "  tried as %s\n", q)
+		for i, a := range r.Attempts {
+			lead := "  then as"
+			if i == 0 {
+				lead = "  first  "
+			}
+			fmt.Fprintf(w, "%s %-34s %s\n", lead, a.Name, st.Dim("-> "+attemptTarget(a)))
 		}
-		fmt.Fprintf(w, "  then as %s on its own\n\n", r.Query)
+		fmt.Fprintf(w, "  %s\n\n", st.Dim("the first of these that answers is the one you get; the rules below are for "+r.Query))
 	}
 
 	fmt.Fprintf(w, "%s\n", st.Bold("How macOS picks a resolver, in order"))
@@ -150,6 +154,22 @@ func Explain(w io.Writer, e Explanation, st Style) {
 		for _, line := range e.Verdict {
 			fmt.Fprintf(w, "  %s\n", line)
 		}
+	}
+}
+
+// attemptTarget names what would answer one search-domain expansion.
+func attemptTarget(a match.Attempt) string {
+	switch {
+	case a.InHosts:
+		return "an entry in the hosts file"
+	case a.Mechanism == match.Multicast:
+		return "multicast DNS (Bonjour)"
+	case a.WinnerIndex == 0:
+		return "nothing: no resolver claims it"
+	case a.WinnerDomain == "":
+		return fmt.Sprintf("resolver #%d (default)", a.WinnerIndex)
+	default:
+		return fmt.Sprintf("resolver #%d %s", a.WinnerIndex, a.WinnerDomain)
 	}
 }
 

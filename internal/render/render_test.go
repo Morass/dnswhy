@@ -115,8 +115,9 @@ func TestSingleLabelShowsTheSearchDomains(t *testing.T) {
 	res := match.Explain(cfg, hostsfile.File{Path: "/etc/hosts"}, "build")
 	var buf bytes.Buffer
 	Explain(&buf, Explanation{Result: res, HostsPath: "/etc/hosts"}, Style{})
-	if !strings.Contains(buf.String(), "tried as build.corp.internal") {
-		t.Errorf("a single-label name must show what it is tried as:\n%s", buf.String())
+	out := buf.String()
+	if !strings.Contains(out, "build.corp.internal") || !strings.Contains(out, "then as build") {
+		t.Errorf("a single-label name must show what it is tried as, in order:\n%s", out)
 	}
 }
 

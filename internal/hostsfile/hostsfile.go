@@ -4,6 +4,7 @@ package hostsfile
 
 import (
 	"bufio"
+	"net"
 	"os"
 	"strings"
 )
@@ -16,10 +17,18 @@ type Entry struct {
 	Line    int    `json:"line"`
 }
 
+// Invalid is a line whose first field is not an address, so the system resolver
+// ignores it. It is kept so the doctor can say the line does nothing.
+type Invalid struct {
+	Line    int    `json:"line"`
+	Address string `json:"address"`
+}
+
 // File is a parsed hosts file.
 type File struct {
-	Path    string  `json:"path"`
-	Entries []Entry `json:"entries"`
+	Path    string    `json:"path"`
+	Entries []Entry   `json:"entries"`
+	Invalid []Invalid `json:"invalid,omitempty"`
 }
 
 // Load reads and parses a hosts file. A missing file is not an error: it means
@@ -43,6 +52,12 @@ func Load(path string) (File, error) {
 		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
+			continue
+		}
+		// An entry whose first field is not an address is ignored by the
+		// system resolver, so it must not count as an answer here either.
+		if net.ParseIP(fields[0]) == nil {
+			f.Invalid = append(f.Invalid, Invalid{Line: n, Address: fields[0]})
 			continue
 		}
 		for _, name := range fields[1:] {

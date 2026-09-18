@@ -4,6 +4,8 @@
 package lookup
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -50,8 +52,11 @@ func (a Answer) Summary() string {
 // and falls back to the Go resolver where dscacheutil does not exist.
 func System(name string, timeout time.Duration) Answer {
 	a := Answer{Via: "system"}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	if _, err := exec.LookPath("dscacheutil"); err == nil {
-		out, err := runWithTimeout(timeout, "dscacheutil", "-q", "host", "-a", "name", name)
+		out, err := exec.CommandContext(ctx, "dscacheutil", "-q", "host", "-a", "name", name).Output()
 		if err == nil {
 			a.Addresses = parseDSCacheUtil(string(out))
 			if len(a.Addresses) == 0 {
@@ -60,13 +65,13 @@ func System(name string, timeout time.Duration) Answer {
 			}
 			return a
 		}
-		if errors.Is(err, errTimeout) {
+		if ctx.Err() != nil {
 			a.Status = "timeout"
 			a.Detail = fmt.Sprintf("dscacheutil did not answer within %s", timeout)
 			return a
 		}
 	}
-	addrs, err := net.LookupHost(name)
+	addrs, err := net.DefaultResolver.LookupHost(ctx, name)
 	if err != nil {
 		a.Status = "no answer"
 		var dnsErr *net.DNSError
@@ -108,26 +113,6 @@ func parseDSCacheUtil(out string) []string {
 	return addrs
 }
 
-var errTimeout = errors.New("timed out")
-
-func runWithTimeout(d time.Duration, name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
-	done := make(chan struct{})
-	var out []byte
-	var err error
-	go func() { out, err = cmd.Output(); close(done) }()
-	select {
-	case <-done:
-		return out, err
-	case <-time.After(d):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		<-done
-		return nil, errTimeout
-	}
-}
-
 // Direct asks one nameserver over UDP, the way dig does: no /etc/hosts, no
 // scoped resolvers, no Bonjour.
 func Direct(server, name string, timeout time.Duration) Answer {
@@ -149,7 +134,9 @@ func Direct(server, name string, timeout time.Duration) Answer {
 		}
 	}
 	if len(a.Addresses) > 0 {
-		a.Status, a.Detail = "", ""
+		if a.Status != "truncated" {
+			a.Status, a.Detail = "", ""
+		}
 		sort.Strings(a.Addresses)
 	}
 	a.CNAMEs = dedupe(a.CNAMEs)
@@ -172,6 +159,7 @@ const (
 	typeA     uint16 = 1
 	typeAAAA  uint16 = 28
 	typeCNAME uint16 = 5
+	classIN   uint16 = 1
 )
 
 // query sends one question and reads one reply. It is deliberately minimal: a
@@ -199,7 +187,7 @@ func query(server, name string, qtype uint16, timeout time.Duration) (addrs, cna
 		}
 		return nil, nil, "no reply", err.Error()
 	}
-	return parseReply(buf[:n], msg[0:2])
+	return parseReply(buf[:n], msg)
 }
 
 func buildQuery(name string, qtype uint16) ([]byte, error) {
@@ -222,12 +210,22 @@ func buildQuery(name string, qtype uint16) ([]byte, error) {
 	return b, nil
 }
 
-func parseReply(msg []byte, wantID []byte) (addrs, cnames []string, status, detail string) {
+// parseReply reads a reply and accepts only what actually answers the question
+// that was asked: the same transaction id, a response bit, the identical
+// question section, and address records whose owner name is the question or a
+// name the reply itself pointed at with a CNAME.
+func parseReply(msg []byte, question []byte) (addrs, cnames []string, status, detail string) {
+	if len(question) < 13 {
+		return nil, nil, "bad reply", "the question was not a DNS message"
+	}
 	if len(msg) < 12 {
 		return nil, nil, "bad reply", "the reply was too short to be DNS"
 	}
-	if msg[0] != wantID[0] || msg[1] != wantID[1] {
+	if msg[0] != question[0] || msg[1] != question[1] {
 		return nil, nil, "bad reply", "the reply did not match the question"
+	}
+	if msg[2]&0x80 == 0 {
+		return nil, nil, "bad reply", "the packet was a question, not an answer"
 	}
 	truncated := msg[2]&0x02 != 0
 	switch rcode := msg[3] & 0x0f; rcode {
@@ -244,29 +242,42 @@ func parseReply(msg []byte, wantID []byte) (addrs, cnames []string, status, deta
 
 	qd := int(msg[4])<<8 | int(msg[5])
 	an := int(msg[6])<<8 | int(msg[7])
-	off := 12
-	for i := 0; i < qd; i++ {
-		var err error
-		if off, err = skipName(msg, off); err != nil {
-			return nil, nil, "bad reply", err.Error()
-		}
-		off += 4
+	if qd != 1 {
+		return nil, nil, "bad reply", "the reply did not echo exactly one question"
 	}
+	// The question section must be the one that was sent, byte for byte.
+	qname, off, err := readName(msg, 12)
+	if err != nil {
+		return nil, nil, "bad reply", err.Error()
+	}
+	if off+4 > len(msg) || !bytes.Equal(msg[12:off+4], question[12:]) {
+		return nil, nil, "bad reply", "the reply answered a different question"
+	}
+	off += 4
+
+	// Only records owned by the question, or by a name a CNAME in this reply
+	// pointed at, are an answer to it.
+	owners := map[string]bool{strings.ToLower(qname): true}
 	for i := 0; i < an && off < len(msg); i++ {
-		var err error
-		if off, err = skipName(msg, off); err != nil {
+		owner, next, err := readName(msg, off)
+		if err != nil {
 			return nil, nil, "bad reply", err.Error()
 		}
+		off = next
 		if off+10 > len(msg) {
 			return nil, nil, "bad reply", "a record ran past the end of the reply"
 		}
 		rtype := uint16(msg[off])<<8 | uint16(msg[off+1])
+		rclass := uint16(msg[off+2])<<8 | uint16(msg[off+3])
 		rdlen := int(msg[off+8])<<8 | int(msg[off+9])
 		off += 10
 		if off+rdlen > len(msg) {
 			return nil, nil, "bad reply", "a record ran past the end of the reply"
 		}
+		known := owners[strings.ToLower(owner)]
 		switch {
+		case rclass != classIN || !known:
+			// Not an answer to this question: an unrelated record riding along.
 		case rtype == typeA && rdlen == 4:
 			addrs = append(addrs, net.IP(msg[off:off+4]).String())
 		case rtype == typeAAAA && rdlen == 16:
@@ -274,9 +285,13 @@ func parseReply(msg []byte, wantID []byte) (addrs, cnames []string, status, deta
 		case rtype == typeCNAME:
 			if n, _, err := readName(msg, off); err == nil {
 				cnames = append(cnames, n)
+				owners[strings.ToLower(n)] = true
 			}
 		}
 		off += rdlen
+	}
+	if truncated && len(addrs) > 0 {
+		return addrs, cnames, "truncated", "the reply did not fit in a UDP packet, so this may be part of the answer"
 	}
 	if len(addrs) == 0 {
 		if truncated {
@@ -313,6 +328,10 @@ func readName(msg []byte, off int) (string, int, error) {
 				start = off
 			}
 			return strings.Join(labels, "."), start, nil
+		case l&0xc0 == 0x40, l&0xc0 == 0x80:
+			// Reserved label types (RFC 6891). Nothing sends them, and reading
+			// the byte as a length would walk off into the rest of the packet.
+			return "", 0, errors.New("the reply used a label type that is not defined")
 		case l&0xc0 == 0xc0:
 			if off+1 >= len(msg) {
 				return "", 0, errors.New("a name ran past the end of the reply")

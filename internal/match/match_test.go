@@ -149,3 +149,34 @@ resolver #2
 		t.Errorf("search domains = %v, want one", got)
 	}
 }
+
+// A single-label name is tried with each search domain first, and those
+// expansions can be claimed by a scope the bare name is not.
+func TestSearchExpansionsGetTheirOwnWinner(t *testing.T) {
+	cfg := fixture(t, "vpn.scutil")
+	got := Explain(cfg, hostsfile.File{}, "build")
+	if len(got.Attempts) != 2 {
+		t.Fatalf("attempts = %+v, want the expansion and the bare name", got.Attempts)
+	}
+	first := got.Attempts[0]
+	if first.Name != "build.corp.internal" || first.WinnerIndex != 3 {
+		t.Errorf("first attempt = %+v, want build.corp.internal on resolver #3", first)
+	}
+	if last := got.Attempts[1]; last.Name != "build" || last.WinnerIndex != 1 {
+		t.Errorf("last attempt = %+v, want the bare name on the default resolver", last)
+	}
+}
+
+func TestAbsoluteNamesSkipSearchDomains(t *testing.T) {
+	cfg := fixture(t, "vpn.scutil")
+	got := Explain(cfg, hostsfile.File{}, "build.")
+	if got.SingleLabel || len(got.Attempts) != 0 || len(got.Qualified) != 0 {
+		t.Errorf("a trailing dot means the name is absolute: %+v", got)
+	}
+	if !got.Absolute {
+		t.Error("the result must record that the name was absolute")
+	}
+	if got.Query != "build" {
+		t.Errorf("query = %q, want the name without the dot", got.Query)
+	}
+}
