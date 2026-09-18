@@ -13,7 +13,7 @@ tool tells you why.
 `dnswhy` reads the configuration macOS is actually using and says, for one name:
 
 - **Which resolver wins**, and which rule made it win.
-- **What the name resolves to** both ways: through the system resolver, and by asking a nameserver directly.
+- **What the name resolves to** both ways: through the system resolver, and by asking that nameserver directly.
 - **What to type next** when the two disagree.
 
 It is a single Go binary for macOS with no runtime dependencies, and it never changes anything.
@@ -59,9 +59,22 @@ When the scope is up, the closing lines instead read:
 
 ```
 Answers
-  system  (every application)    198.51.100.9
-  asked 192.0.2.53 directly      NXDOMAIN  the nameserver says this name does not exist
-  asked 198.51.100.53 directly   198.51.100.9
+  system  (every application)     198.51.100.9
+  asked 198.51.100.53 directly    198.51.100.9
+
+  files.corp.internal is answered by the corp.internal scope, which dig knows nothing about:
+  dig reads /etc/resolv.conf and would ask 192.0.2.53. To ask what your
+  applications ask, name the server yourself:  dig @198.51.100.53 files.corp.internal
+```
+
+`dnswhy` asks only the nameserver your Mac would ask for that name. A name that a private scope
+claims is never sent to your default resolver, because that would hand an internal hostname to
+whoever runs it. `--compare` asks it anyway, which is what a plain `dig` does:
+
+```
+  system  (every application)     198.51.100.9
+  asked 192.0.2.53 directly       NXDOMAIN  the nameserver says this name does not exist
+  asked 198.51.100.53 directly    198.51.100.9
 
   Your applications resolve this name (198.51.100.9) while a direct question to 192.0.2.53
   returns nxdomain. The machine is fine; the tool you are testing with is looking
@@ -93,11 +106,17 @@ dnswhy doctor >/dev/null || echo "DNS needs a look"
 ### 4. Names with no dot
 
 ```sh
-dnswhy build
+$ dnswhy build
+
+A name with no dot, so it is tried with each search domain first
+  first   build.corp.internal    -> resolver #3 corp.internal
+  then as build                  -> resolver #1 (default)
+  the first of these that answers is the one you get; the rules below are for build
 ```
 
-A single-label name is also tried with each search domain appended, which is how a bare word ends up
-resolving to a host you never meant. `dnswhy` lists what the name is tried as, in order.
+A single-label name is tried with each search domain appended before it is tried on its own, and each
+of those is a different question that can land on a different resolver — which is how a bare word ends
+up resolving to somebody else's host.
 
 ### 5. Feeding it to something else
 
@@ -132,6 +151,7 @@ Flags shared by both commands:
 |---|---|
 | `--json` | Print the findings as JSON |
 | `--offline` | Explain the configuration without asking any nameserver |
+| `--compare` | Also ask the default nameserver, even for a name a private scope claims |
 | `--timeout <duration>` | How long to wait for each answer (default `3s`) |
 | `--no-color` | Never colour the output |
 | `--hosts-file <path>` | Read another hosts file (default `/etc/hosts`) |
@@ -149,8 +169,10 @@ on the machine with the problem, then `dnswhy name --scutil-file state.txt` anyw
 - `/etc/resolver/*` and `/etc/hosts`;
 - `dscacheutil -q host -a name <name>`, to resolve the name the way your applications do.
 
-It then sends **one UDP DNS query** for the name to nameservers that are already configured on this
-machine — nothing else leaves it. Unless you pass `--offline`, in which case nothing does.
+It then sends **one UDP DNS query** for the name, to the nameserver this Mac itself would ask for that
+name and to no other — so a name your VPN or container claims does not go to your default resolver
+unless you ask for that with `--compare`. A name answered from `/etc/hosts`, and a `.local` name, are
+not sent anywhere at all. With `--offline`, nothing is.
 
 It writes no files, keeps no history, has no configuration file and no background service, and
 changes nothing about how your Mac resolves names. Everything it prints came from the three sources
@@ -169,6 +191,7 @@ above, so output is safe to paste into a bug report once you are happy with the 
   listed but not simulated, because that choice belongs to the program, not to the configuration.
 - Only addresses are resolved (A and AAAA). It is not a replacement for `dig` when you want MX, TXT
   or a zone transfer.
+- It accepts hostnames only: letters, digits, `-`, `_` and `.`. Use punycode for an international name.
 
 ## License
 

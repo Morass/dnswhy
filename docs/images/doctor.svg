@@ -17,7 +17,7 @@
 <text x="68.58" y="272.32" fill="#7f8796" xml:space="preserve">odd permissions, or a domain that another scope already claims, can end</text>
 <text x="68.58" y="290.32" fill="#7f8796" xml:space="preserve">up ignored.</text>
 <text x="18.00" y="308.32" fill="#f9e2af" xml:space="preserve">warn</text><text x="68.58" y="308.32" fill="#d5dae3" font-weight="700" xml:space="preserve">/etc/resolver/typo.example has lines macOS does not understand</text>
-<text x="68.58" y="326.32" fill="#7f8796" xml:space="preserve">nameserver198.51.100.77</text>
+<text x="68.58" y="326.32" fill="#7f8796" xml:space="preserve">unrecognised keyword(s): nameserver198.51.100.77</text>
 <text x="68.58" y="344.32" fill="#7f8796" xml:space="preserve">Only nameserver, domain, search, port, timeout and search_order are</text>
 <text x="68.58" y="362.32" fill="#7f8796" xml:space="preserve">read.</text>
 <text x="68.58" y="380.32" fill="#7f8796" xml:space="preserve">Nothing else in the file is usable, so it has no effect at all.</text>
@@ -25,7 +25,7 @@
 <text x="68.58" y="416.32" fill="#7f8796" xml:space="preserve">A name with no dot is also tried as name.corp.internal.</text>
 <text x="68.58" y="434.32" fill="#7f8796" xml:space="preserve">This is why a bare word can resolve to a host you did not mean.</text>
 <text x="18.00" y="452.32" fill="#f9e2af" xml:space="preserve">warn</text><text x="68.58" y="452.32" fill="#d5dae3" font-weight="700" xml:space="preserve">doubled.example has more than one IPv4 address in /etc/hosts</text>
-<text x="68.58" y="470.32" fill="#7f8796" xml:space="preserve">line 8, line 9.</text>
+<text x="68.58" y="470.32" fill="#7f8796" xml:space="preserve">line 7, line 8.</text>
 <text x="68.58" y="488.32" fill="#7f8796" xml:space="preserve">The first entry wins; the rest are dead weight.</text>
 <text x="18.00" y="506.32" fill="#89dceb" xml:space="preserve">note</text><text x="68.58" y="506.32" fill="#d5dae3" font-weight="700" xml:space="preserve">pinned.corp.internal in /etc/hosts shadows the &quot;corp.internal&quot; scope</text>
 <text x="68.58" y="524.32" fill="#7f8796" xml:space="preserve">resolver #3 will never be asked for this name.</text>
