@@ -4,6 +4,8 @@ package hostsfile
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -35,16 +37,24 @@ type File struct {
 // no name is pinned.
 func Load(path string) (File, error) {
 	f := File{Path: path}
-	fh, err := os.Open(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return f, nil
 		}
 		return f, err
 	}
+	if !info.Mode().IsRegular() {
+		return f, fmt.Errorf("%s is not an ordinary file", path)
+	}
+	fh, err := os.Open(path)
+	if err != nil {
+		return f, err
+	}
 	defer fh.Close()
 
-	sc := bufio.NewScanner(fh)
+	// A hosts file is a few kilobytes; anything past this is not one.
+	sc := bufio.NewScanner(io.LimitReader(fh, 8<<20))
 	for n := 1; sc.Scan(); n++ {
 		line := sc.Text()
 		if i := strings.IndexByte(line, '#'); i >= 0 {

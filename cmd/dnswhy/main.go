@@ -167,7 +167,7 @@ func newFlagSet(name string, stderr io.Writer, opts *options) *flag.FlagSet {
 func load(o options) (dnsconf.Config, resolverdir.Dir, hostsfile.File, error) {
 	var cfg dnsconf.Config
 	if o.scutilFile != "" {
-		b, err := os.ReadFile(o.scutilFile)
+		b, err := readAtMost(o.scutilFile, maxFileSize)
 		if err != nil {
 			return cfg, resolverdir.Dir{}, hostsfile.File{}, err
 		}
@@ -229,19 +229,30 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 		sys := lookup.System(name, o.timeout)
 		exp.System = &sys
 		asked := map[string]bool{}
+		// resolver(5): the resolvers listed for a scope are tried in turn until
+		// one answers, so a dead first entry must not be reported as the
+		// scope failing.
 		ask := func(r dnsconf.Resolver) {
-			if len(r.Nameservers) == 0 {
-				return
+			var last *lookup.Answer
+			for i := range r.Nameservers {
+				server := serverAddress(r, i)
+				if asked[server] {
+					continue
+				}
+				asked[server] = true
+				// name keeps any trailing dot the user typed: it tells the
+				// system resolver the name is absolute and must not be
+				// expanded with a search domain.
+				got := lookup.Direct(server, name, o.timeout)
+				if got.OK() {
+					exp.Direct = append(exp.Direct, got)
+					return
+				}
+				last = &got
 			}
-			server := serverAddress(r)
-			if asked[server] {
-				return
+			if last != nil {
+				exp.Direct = append(exp.Direct, *last)
 			}
-			asked[server] = true
-			// name keeps any trailing dot the user typed: it tells the system
-			// resolver the name is absolute and must not be expanded with a
-			// search domain.
-			exp.Direct = append(exp.Direct, lookup.Direct(server, name, o.timeout))
 		}
 		// By default dnswhy asks exactly what this Mac would ask and nothing
 		// else: sending a name that a private scope claims to a public
@@ -263,6 +274,34 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	render.Explain(stdout, exp, style(o, stdout))
 	return 0
+}
+
+// maxFileSize bounds every file the tool is pointed at. A configuration dump is
+// a few kilobytes; /dev/zero is not, and neither is a file someone hands you.
+const maxFileSize = 8 << 20
+
+// readAtMost reads an ordinary file, and no more of it than it should need.
+func readAtMost(path string, limit int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not an ordinary file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%s is larger than %d MiB, which is not a DNS configuration", path, limit>>20)
+	}
+	return b, nil
 }
 
 // checkName rejects anything that is not a hostname. It keeps control
@@ -294,12 +333,12 @@ func checkName(name string) error {
 	return nil
 }
 
-// serverAddress is the first nameserver of a resolver, with the resolver's own
+// serverAddress is the nth nameserver of a resolver, with the resolver's own
 // port when it sets one: a local dnsmasq or a container often listens somewhere
 // other than 53, and asking port 53 there would answer a different question
 // from the one the system asks.
-func serverAddress(r dnsconf.Resolver) string {
-	ns := r.Nameservers[0]
+func serverAddress(r dnsconf.Resolver, n int) string {
+	ns := r.Nameservers[n]
 	if r.Port == 0 || r.Port == 53 {
 		return ns
 	}

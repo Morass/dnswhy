@@ -368,3 +368,38 @@ func TestHostsAnswerDoesNotDragInScopeWarnings(t *testing.T) {
 		t.Errorf("the hosts verdict is missing:\n%s", got.stdout)
 	}
 }
+
+// A file the tool is pointed at must be an ordinary file of a sane size:
+// /dev/zero would otherwise be read until memory ran out.
+func TestEndlessFilesAreRefused(t *testing.T) {
+	sane := filepath.Join("..", "testdata", "simple.scutil")
+	for _, flag := range []string{"--scutil-file", "--hosts-file"} {
+		args := []string{"example.com", flag, "/dev/zero", "--offline"}
+		if flag != "--scutil-file" {
+			args = append(args, "--scutil-file", sane)
+		}
+		got := runIn(t, args...)
+		if got.code != 1 {
+			t.Errorf("%s /dev/zero: exit = %d, want 1", flag, got.code)
+		}
+		if !strings.Contains(got.stderr, "ordinary file") {
+			t.Errorf("%s /dev/zero: stderr = %q", flag, got.stderr)
+		}
+	}
+}
+
+// A scope that claims the name but lists no nameserver must be explained, not
+// left as a half-finished sentence.
+func TestScopeWithoutANameserverIsExplained(t *testing.T) {
+	got := explain(t, "foo.search.only")
+	out := got.stdout
+	if strings.Contains(out, "To ask what your\n") && !strings.Contains(out, "name the server yourself") {
+		t.Errorf("the verdict stops mid-sentence:\n%s", out)
+	}
+	if strings.Contains(out, "there is no default nameserver") {
+		t.Errorf("there is a default nameserver in this fixture:\n%s", out)
+	}
+	if !strings.Contains(out, "cannot answer") {
+		t.Errorf("the scope that cannot answer should be named:\n%s", out)
+	}
+}

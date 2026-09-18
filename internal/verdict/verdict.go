@@ -44,6 +44,15 @@ func Lines(in Input) []string {
 		out = append(out, "lookup cannot go anywhere. Check that a network interface is up.")
 	}
 
+	// A scope can claim the name and still have nothing to ask.
+	for _, c := range r.Candidates {
+		if c.Matched && c.CannotAnswer {
+			out = append(out, fmt.Sprintf("A resolver claims %s but lists no nameserver, so it only contributes a", c.Resolver.Domain))
+			out = append(out, "search domain. The answer comes from the resolver marked as the winner above.")
+			break
+		}
+	}
+
 	winner := r.Winner
 	scoped := winner != nil && winner.Domain != "" && !winner.IsMulticast()
 	if scoped && in.Default != nil && winner.Index != in.Default.Index && r.Mechanism != match.FromHosts {

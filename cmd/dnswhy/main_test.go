@@ -21,10 +21,17 @@ func TestServerAddressUsesTheResolverPort(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := serverAddress(c.res); got != c.want {
+			if got := serverAddress(c.res, 0); got != c.want {
 				t.Errorf("serverAddress = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestServerAddressPicksTheNthNameserver(t *testing.T) {
+	r := dnsconf.Resolver{Nameservers: []string{"198.51.100.53", "198.51.100.54"}, Port: 5353}
+	if got := serverAddress(r, 1); got != "198.51.100.54:5353" {
+		t.Errorf("serverAddress = %q", got)
 	}
 }
 

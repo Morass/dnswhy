@@ -55,8 +55,11 @@ type Candidate struct {
 	Wins     bool             `json:"wins"`
 	// Labels is how many labels of the name the resolver's domain matched;
 	// -1 for the catch-all resolver, which matches nothing specific.
-	Labels int    `json:"labels"`
-	Why    string `json:"why"`
+	Labels int `json:"labels"`
+	// CannotAnswer is true for a resolver that matches the name but has no
+	// nameserver to ask, so it is passed over.
+	CannotAnswer bool   `json:"cannot_answer,omitempty"`
+	Why          string `json:"why"`
 }
 
 // Attempt is one name the resolver will actually try, with the resolver that
@@ -160,6 +163,13 @@ func explainOne(cfg dnsconf.Config, hosts hostsfile.File, name string) Result {
 			} else {
 				c.Why = "claims " + r.Domain + ", a suffix of the name"
 			}
+			// A resolver with no nameserver and no multicast option has
+			// nothing to ask: it exists only to add a search domain, so the
+			// query goes on to whatever comes next.
+			if len(r.Nameservers) == 0 && !r.IsMulticast() {
+				c.CannotAnswer = true
+				c.Why += ", but has no nameserver, so it cannot answer"
+			}
 		default:
 			c.Why = "claims " + r.Domain + ", which the name does not end in"
 		}
@@ -167,7 +177,7 @@ func explainOne(cfg dnsconf.Config, hosts hostsfile.File, name string) Result {
 	}
 
 	for i, c := range res.Candidates {
-		if !c.Matched {
+		if !c.Matched || c.CannotAnswer {
 			continue
 		}
 		if best == -1 || better(c, res.Candidates[best]) {

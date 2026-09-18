@@ -180,3 +180,28 @@ func TestAbsoluteNamesSkipSearchDomains(t *testing.T) {
 		t.Errorf("query = %q, want the name without the dot", got.Query)
 	}
 }
+
+// A resolver that claims a name but lists no nameserver cannot answer it, so
+// it must not be reported as the winner.
+func TestScopeWithNoNameserverCannotWin(t *testing.T) {
+	cfg := fixture(t, "vpn.scutil")
+	got := Explain(cfg, hostsfile.File{}, "foo.search.only")
+	if got.Winner == nil || got.Winner.Index != 1 {
+		t.Fatalf("winner = %v, want the default resolver", got.Winner)
+	}
+	if got.Mechanism != Unicast {
+		t.Errorf("mechanism = %q, want %q", got.Mechanism, Unicast)
+	}
+	var seen bool
+	for _, c := range got.Candidates {
+		if c.Resolver.Index == 5 {
+			seen = true
+			if !c.Matched || !c.CannotAnswer || c.Wins {
+				t.Errorf("the search-only scope = %+v, want matched, unable to answer and not winning", c)
+			}
+		}
+	}
+	if !seen {
+		t.Error("the scope that claims the name should still be listed")
+	}
+}

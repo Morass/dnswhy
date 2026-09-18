@@ -115,6 +115,8 @@ func Explain(w io.Writer, e Explanation, st Style) {
 			status = st.Green("MATCH") + " " + st.Bold("<- wins")
 		case c.Matched && c.Resolver.Default():
 			status = st.Dim("would answer, but a scope claims this name first")
+		case c.Matched && c.CannotAnswer:
+			status = st.Yellow("claims it, but cannot answer")
 		case c.Matched:
 			status = st.Dim("matches, but a more specific scope wins")
 		}
