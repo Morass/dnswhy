@@ -167,3 +167,19 @@ func TestWrapKeepsLongWordsWhole(t *testing.T) {
 		t.Errorf("wrap = %q", got)
 	}
 }
+
+// The attempt list must not claim an order between the hosts file and the
+// search domains that the tool cannot actually observe.
+func TestSingleLabelHeadingClaimsNoOrderItCannotSee(t *testing.T) {
+	cfg := dnsconf.Parse("DNS configuration\n\nresolver #1\n  nameserver[0] : 192.0.2.53\n  search domain[0] : corp.internal\n")
+	hosts := hostsfile.File{Path: "/etc/hosts", Entries: []hostsfile.Entry{{Name: "build", Address: "203.0.113.9", Line: 2}}}
+	res := match.Explain(cfg, hosts, "build")
+	var buf bytes.Buffer
+	Explain(&buf, Explanation{Result: res, HostsPath: "/etc/hosts"}, Style{})
+	if strings.Contains(buf.String(), "answers first") {
+		t.Errorf("the heading must not order hosts against the search domains:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "an entry in the hosts file") {
+		t.Errorf("the attempt that the hosts file covers should still say so:\n%s", buf.String())
+	}
+}

@@ -72,11 +72,7 @@ func Explain(w io.Writer, e Explanation, st Style) {
 	fmt.Fprintf(w, "%s  %s\n\n", st.Bold("Question"), st.Bold(r.Query))
 
 	if len(r.Attempts) > 0 {
-		heading := "A name with no dot, so it is tried with each search domain first"
-		if len(r.Hosts) > 0 {
-			heading += " - though " + e.HostsPath + " answers first"
-		}
-		fmt.Fprintf(w, "%s\n", st.Bold(heading))
+		fmt.Fprintf(w, "%s\n", st.Bold("A name with no dot, so it is tried with each search domain first"))
 		for i, a := range r.Attempts {
 			lead := "  then as"
 			if i == 0 {
