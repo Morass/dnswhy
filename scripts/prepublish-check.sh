@@ -49,7 +49,16 @@ if [ -s .git/info/private-patterns ]; then
 		[ -n "$files" ] && { echo "$files"; hit "private patterns found in files"; }
 		msgs=$(git log --all --format='%h %s%n%b' | grep -iE "$pp")
 		[ -n "$msgs" ] && { echo "$msgs"; hit "private patterns found in commit messages"; }
-		n=$(git log --all -p -- . "$self" | grep -ciE "$pp")
+		# History the owner has decided to leave alone can be listed, one
+		# extended regex per line, in .git/info/private-exceptions (local,
+		# never committed). Only past diffs can be excused this way: the
+		# working tree and commit messages are always checked in full.
+		past=$(git log --all -p -- . "$self" | grep -iE "$pp")
+		if [ -s .git/info/private-exceptions ]; then
+			ex=$(grep -v '^[[:space:]]*\(#\|$\)' .git/info/private-exceptions | paste -sd'|' -)
+			[ -n "$ex" ] && past=$(printf '%s\n' "$past" | grep -ivE "$ex")
+		fi
+		n=$(printf '%s' "$past" | grep -c . )
 		[ "$n" != 0 ] && hit "private patterns found in $n line(s) of past diffs"
 	fi
 fi
