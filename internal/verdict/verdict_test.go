@@ -42,8 +42,11 @@ func TestSystemResolvesWhileDirectDoesNot(t *testing.T) {
 		Direct:  []lookup.Answer{direct},
 		Default: defaultResolver(),
 	})
-	if !strings.Contains(got, "The machine is fine") {
-		t.Errorf("verdict should absolve the machine:\n%s", got)
+	if !strings.Contains(got, "Applications are getting an answer") {
+		t.Errorf("verdict should say the applications are fine, without inventing a cause:\n%s", got)
+	}
+	if strings.Contains(got, "wrong place") {
+		t.Errorf("verdict must not assert a cause it cannot see:\n%s", got)
 	}
 }
 
@@ -57,8 +60,11 @@ func TestDirectResolvesWhileSystemDoesNot(t *testing.T) {
 		Default:   defaultResolver(),
 		HostsPath: "/etc/hosts",
 	})
-	if !strings.Contains(got, "shadowing") || !strings.Contains(got, "/etc/hosts") {
-		t.Errorf("verdict should point at what shadows the name:\n%s", got)
+	if !strings.Contains(got, "in the way") || !strings.Contains(got, "/etc/hosts") {
+		t.Errorf("verdict should point at what could be in the way:\n%s", got)
+	}
+	if strings.Contains(got, "no nameserver was") {
+		t.Errorf("a nameserver was asked and answered; the verdict must not say otherwise:\n%s", got)
 	}
 }
 
@@ -121,7 +127,7 @@ func TestUnreachableScopeIsExplained(t *testing.T) {
 		Result:  match.Result{Query: "files.corp.internal", Mechanism: match.Unicast, Winner: w},
 		Default: defaultResolver(),
 	})
-	if !strings.Contains(got, "does not fall back") {
+	if !strings.Contains(got, "rather than falling back") {
 		t.Errorf("verdict should say the lookup does not fall back:\n%s", got)
 	}
 }
@@ -186,5 +192,65 @@ func TestHostsAnswerIsNotCalledAFailure(t *testing.T) {
 	})
 	if strings.Contains(got, "Nothing here is broken") || strings.Contains(got, "no nameserver was asked") {
 		t.Errorf("a hosts answer is not a failure:\n%s", got)
+	}
+}
+
+// A scope flagged unreachable that nonetheless answered must not be described
+// as failing: an answer beats a flag.
+func TestUnreachableScopeThatAnsweredIsNotCalledAFailure(t *testing.T) {
+	w := scoped()
+	w.Reachable = false
+	sys := lookup.Answer{Via: "system", Addresses: []string{"198.51.100.9"}}
+	direct := lookup.Answer{Via: "198.51.100.53", Addresses: []string{"198.51.100.9"}}
+	got := text(Input{
+		Result:  match.Result{Query: "files.corp.internal", Mechanism: match.Unicast, Winner: w},
+		System:  &sys,
+		Direct:  []lookup.Answer{direct},
+		Default: defaultResolver(),
+	})
+	if strings.Contains(got, "this name fails") || strings.Contains(got, "rather than falling back") {
+		t.Errorf("the name resolved; the verdict must not call it a failure:\n%s", got)
+	}
+}
+
+// The command offered to the reader has to name the port the resolver uses.
+func TestDigCommandCarriesThePort(t *testing.T) {
+	w := scoped()
+	w.Port = 5353
+	got := text(Input{
+		Result:  match.Result{Query: "files.corp.internal", Mechanism: match.Unicast, Winner: w},
+		Default: defaultResolver(),
+	})
+	if !strings.Contains(got, "dig -p 5353 @198.51.100.53 files.corp.internal") {
+		t.Errorf("verdict = %s", got)
+	}
+}
+
+// A nameserver that is not an address cannot become part of a command.
+func TestDigCommandRefusesNonAddresses(t *testing.T) {
+	w := scoped()
+	w.Nameservers = []string{"198.51.100.53;id;#"}
+	got := text(Input{
+		Result:  match.Result{Query: "files.corp.internal", Mechanism: match.Unicast, Winner: w},
+		Default: defaultResolver(),
+	})
+	if strings.Contains(got, "id;") || strings.Contains(got, "dig @") {
+		t.Errorf("a command was built from something that is not an address:\n%s", got)
+	}
+}
+
+// One question answering "nothing here" and the other not answering at all is
+// not proof that a name has no address.
+func TestIncompleteAnswerIsNotCalledAbsence(t *testing.T) {
+	sys := lookup.Answer{Via: "system", Status: "no answer"}
+	direct := lookup.Answer{Via: "192.0.2.53", Status: "incomplete", ByType: map[string]string{"A": "no address", "AAAA": "timeout"}}
+	got := text(Input{
+		Result:  match.Result{Query: "half.example", Mechanism: match.Unicast, Winner: defaultResolver()},
+		System:  &sys,
+		Direct:  []lookup.Answer{direct},
+		Default: defaultResolver(),
+	})
+	if !strings.Contains(got, "not proof") {
+		t.Errorf("an incomplete answer must be described as incomplete:\n%s", got)
 	}
 }

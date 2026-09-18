@@ -152,6 +152,7 @@ Flags shared by both commands:
 | `--json` | Print the findings as JSON |
 | `--offline` | Explain the configuration without asking any nameserver |
 | `--compare` | Also ask the default nameserver, even for a name a private scope claims |
+| `--live` | Resolve for real even though the configuration came from a file |
 | `--timeout <duration>` | How long to wait for each answer (default `3s`) |
 | `--no-color` | Never colour the output |
 | `--hosts-file <path>` | Read another hosts file (default `/etc/hosts`) |
@@ -159,7 +160,9 @@ Flags shared by both commands:
 | `--scutil-file <path>` | Read a saved `scutil --dns` dump instead of running `scutil` |
 
 The last three let you explain a configuration captured somewhere else: `scutil --dns > state.txt`
-on the machine with the problem, then `dnswhy name --scutil-file state.txt` anywhere.
+on the machine with the problem, then `dnswhy name --scutil-file state.txt` anywhere. A configuration
+that came from a file is explained and nothing is asked — it describes another machine, and the name
+in it may be one that should never leave that network. `--live` resolves anyway, against yours.
 
 ## What it touches
 
@@ -172,7 +175,9 @@ on the machine with the problem, then `dnswhy name --scutil-file state.txt` anyw
 It then sends **one UDP DNS query** for the name, to the nameserver this Mac itself would ask for that
 name and to no other — so a name your VPN or container claims does not go to your default resolver
 unless you ask for that with `--compare`. A name answered from `/etc/hosts`, and a `.local` name, are
-not sent anywhere at all. With `--offline`, nothing is.
+not sent anywhere at all; a name with no dot stops at the first search domain that answers, as your
+Mac does; and a configuration replayed from a file asks nothing without `--live`. With `--offline`,
+nothing is.
 
 It writes no files, keeps no history, has no configuration file and no background service, and
 changes nothing about how your Mac resolves names. Everything it prints came from the three sources

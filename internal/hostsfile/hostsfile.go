@@ -9,7 +9,12 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 )
+
+// maxFileSize is far larger than any real hosts file and small enough that a
+// file that is not one cannot be read into memory whole.
+const maxFileSize = 8 << 20
 
 // Entry is one name-to-address mapping, remembered with the line it came from
 // so the explanation can point at it.
@@ -37,24 +42,30 @@ type File struct {
 // no name is pinned.
 func Load(path string) (File, error) {
 	f := File{Path: path}
-	info, err := os.Stat(path)
+	// Open first, then check the descriptor: a path checked and then opened can
+	// be swapped for a link or a pipe in between.
+	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return f, nil
 		}
+		return f, fmt.Errorf("%s could not be opened as an ordinary file: %w", path, err)
+	}
+	defer fh.Close()
+	info, err := fh.Stat()
+	if err != nil {
 		return f, err
 	}
 	if !info.Mode().IsRegular() {
 		return f, fmt.Errorf("%s is not an ordinary file", path)
 	}
-	fh, err := os.Open(path)
-	if err != nil {
-		return f, err
+	// Truncating a hosts file would change which names it answers, so an
+	// oversized one is refused rather than read in part.
+	if info.Size() > maxFileSize {
+		return f, fmt.Errorf("%s is %d bytes, which is not a hosts file", path, info.Size())
 	}
-	defer fh.Close()
 
-	// A hosts file is a few kilobytes; anything past this is not one.
-	sc := bufio.NewScanner(io.LimitReader(fh, 8<<20))
+	sc := bufio.NewScanner(io.LimitReader(fh, maxFileSize))
 	for n := 1; sc.Scan(); n++ {
 		line := sc.Text()
 		if i := strings.IndexByte(line, '#'); i >= 0 {

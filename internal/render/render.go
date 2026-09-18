@@ -14,6 +14,27 @@ import (
 	"github.com/morass/dnswhy/internal/resolverdir"
 )
 
+// clean makes text from a file safe to print. A hosts file, a resolver file or
+// a saved configuration can hold anything, including escape sequences that
+// would repaint or clear the reader's terminal, so every byte that came from
+// one is shown rather than executed.
+func clean(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		switch {
+		case r == '\t':
+			b.WriteByte(' ')
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, "\\x%02x", r)
+		case r >= 0x80 && r <= 0x9f, r == 0x2028, r == 0x2029:
+			fmt.Fprintf(&b, "\\u%04x", r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // wrapWidth is the column the long explanatory lines wrap at. It is fixed
 // rather than taken from the terminal so the same text appears in a narrow
 // window, a wide one and a file.
@@ -84,7 +105,7 @@ type Explanation struct {
 // Explain writes the human-readable explanation.
 func Explain(w io.Writer, e Explanation, st Style) {
 	r := e.Result
-	fmt.Fprintf(w, "%s  %s\n\n", st.Bold("Question"), st.Bold(r.Query))
+	fmt.Fprintf(w, "%s  %s\n\n", st.Bold("Question"), st.Bold(clean(r.Query)))
 
 	if len(r.Attempts) > 0 {
 		fmt.Fprintf(w, "%s\n", st.Bold("A name with no dot, so it is tried with each search domain first"))
@@ -93,26 +114,26 @@ func Explain(w io.Writer, e Explanation, st Style) {
 			if i == 0 {
 				lead = "  first  "
 			}
-			line := fmt.Sprintf("%s %-34s %s", lead, a.Name, st.Dim("-> "+attemptTarget(a)))
+			line := fmt.Sprintf("%s %-34s %s", lead, clean(a.Name), st.Dim("-> "+attemptTarget(a)))
 			if got, ok := e.attemptAnswer(a.Name); ok {
 				line += "   " + answerText(got, st)
 			}
 			fmt.Fprintln(w, line)
 		}
-		fmt.Fprintf(w, "  %s\n\n", st.Dim("the first of these that answers is the one you get; the rules below are for "+r.Query))
+		fmt.Fprintf(w, "  %s\n\n", st.Dim("the first of these that answers is the one you get; the rules below are for "+clean(r.Query)))
 	}
 
 	fmt.Fprintf(w, "%s\n", st.Bold("How macOS picks a resolver, in order"))
 	step := 1
 	// /etc/hosts always comes first.
 	if len(r.Hosts) > 0 {
-		fmt.Fprintf(w, "  %d  %-34s %s\n", step, e.HostsPath, st.Green("MATCH")+" "+st.Bold("<- wins"))
+		fmt.Fprintf(w, "  %d  %-34s %s\n", step, clean(e.HostsPath), st.Green("MATCH")+" "+st.Bold("<- wins"))
 		for _, h := range r.Hosts {
-			fmt.Fprintf(w, "       line %d: %s\n", h.Line, st.Cyan(h.Address))
+			fmt.Fprintf(w, "       line %d: %s\n", h.Line, st.Cyan(clean(h.Address)))
 		}
 		fmt.Fprintf(w, "       %s\n", st.Dim("an entry here ends the lookup; no nameserver is asked"))
 	} else {
-		fmt.Fprintf(w, "  %d  %-34s %s\n", step, e.HostsPath, st.Dim("no entry"))
+		fmt.Fprintf(w, "  %d  %-34s %s\n", step, clean(e.HostsPath), st.Dim("no entry"))
 	}
 	step++
 
@@ -146,7 +167,7 @@ func Explain(w io.Writer, e Explanation, st Style) {
 		case c.Matched:
 			status = st.Dim("matches, but a more specific scope wins")
 		}
-		fmt.Fprintf(w, "  %d  %-34s %s\n", step, label, status)
+		fmt.Fprintf(w, "  %d  %-34s %s\n", step, clean(label), status)
 		for _, line := range resolverDetail(c, e.Files, st) {
 			fmt.Fprintf(w, "       %s\n", line)
 		}
@@ -159,10 +180,10 @@ func Explain(w io.Writer, e Explanation, st Style) {
 		case len(skipped) == 0:
 			text = fmt.Sprintf("(%s claim names this one does not end in)", plural(bonjour, "Bonjour scope"))
 		case bonjour == 0:
-			text = fmt.Sprintf("(%s claim names this one does not end in: %s)", plural(n, "other scope"), strings.Join(skipped, ", "))
+			text = fmt.Sprintf("(%s claim names this one does not end in: %s)", plural(n, "other scope"), clean(strings.Join(skipped, ", ")))
 		default:
 			text = fmt.Sprintf("(%s claim names this one does not end in: %s, and %s)",
-				plural(n, "other scope"), strings.Join(skipped, ", "), plural(bonjour, "Bonjour scope"))
+				plural(n, "other scope"), clean(strings.Join(skipped, ", ")), plural(bonjour, "Bonjour scope"))
 		}
 		for _, line := range wrap(text, wrapWidth-2) {
 			fmt.Fprintf(w, "  %s\n", st.Dim(line))
@@ -178,14 +199,14 @@ func Explain(w io.Writer, e Explanation, st Style) {
 			fmt.Fprintf(w, "  %-30s %s\n", "system  (every application)", answerText(*e.System, st))
 		}
 		for _, d := range e.Direct {
-			fmt.Fprintf(w, "  %-30s %s\n", "asked "+d.Via+" directly", answerText(d, st))
+			fmt.Fprintf(w, "  %-30s %s\n", "asked "+clean(d.Via)+" directly", answerText(d, st))
 		}
 	}
 
 	if len(e.Verdict) > 0 {
 		fmt.Fprintln(w)
 		for _, line := range e.Verdict {
-			fmt.Fprintf(w, "  %s\n", line)
+			fmt.Fprintf(w, "  %s\n", clean(line))
 		}
 	}
 }
@@ -207,25 +228,30 @@ func attemptTarget(a match.Attempt) string {
 		return "an entry in the hosts file"
 	case a.Mechanism == match.Multicast:
 		return "multicast DNS (Bonjour)"
-	case a.WinnerIndex == 0:
+	case !a.HasWinner:
 		return "nothing: no resolver claims it"
 	case a.WinnerDomain == "":
 		return fmt.Sprintf("resolver #%d (default)", a.WinnerIndex)
 	default:
-		return fmt.Sprintf("resolver #%d %s", a.WinnerIndex, a.WinnerDomain)
+		return fmt.Sprintf("resolver #%d %s", a.WinnerIndex, clean(a.WinnerDomain))
 	}
 }
 
 func answerText(a lookup.Answer, st Style) string {
 	if a.OK() {
-		return st.Cyan(strings.Join(a.Addresses, ", "))
+		text := st.Cyan(clean(strings.Join(a.Addresses, ", ")))
+		// A truncated reply is still an answer, but only part of one.
+		if a.Status == "truncated" {
+			text += st.Yellow("  (partial: ") + st.Dim(clean(a.Detail)) + st.Yellow(")")
+		}
+		return text
 	}
 	if a.Status == "" {
 		return st.Dim("no answer")
 	}
-	text := st.Yellow(a.Status)
+	text := st.Yellow(clean(a.Status))
 	if a.Detail != "" {
-		text += st.Dim("  " + a.Detail)
+		text += st.Dim("  " + clean(a.Detail))
 	}
 	return text
 }
@@ -234,7 +260,7 @@ func resolverLabel(r dnsconf.Resolver) string {
 	if r.Domain == "" {
 		return fmt.Sprintf("resolver #%-2d (default)", r.Index)
 	}
-	return fmt.Sprintf("resolver #%-2d %s", r.Index, r.Domain)
+	return fmt.Sprintf("resolver #%-2d %s", r.Index, clean(r.Domain))
 }
 
 func resolverDetail(c match.Candidate, files resolverdir.Dir, st Style) []string {
@@ -242,7 +268,7 @@ func resolverDetail(c match.Candidate, files resolverdir.Dir, st Style) []string
 	var out []string
 	if r.Domain != "" {
 		if f, ok := files.ForDomain(r.Domain); ok {
-			out = append(out, st.Dim("from "+f.Path))
+			out = append(out, st.Dim("from "+clean(f.Path)))
 		}
 	}
 	var bits []string
@@ -250,7 +276,7 @@ func resolverDetail(c match.Candidate, files resolverdir.Dir, st Style) []string
 	case r.IsMulticast():
 		bits = append(bits, "multicast DNS (Bonjour)")
 	case len(r.Nameservers) > 0:
-		bits = append(bits, "nameserver "+strings.Join(r.Nameservers, ", "))
+		bits = append(bits, "nameserver "+clean(strings.Join(r.Nameservers, ", ")))
 	default:
 		bits = append(bits, "no nameserver")
 	}
@@ -269,7 +295,7 @@ func resolverDetail(c match.Candidate, files resolverdir.Dir, st Style) []string
 	}
 	out = append(out, strings.Join(bits, "   "))
 	if c.Why != "" && (c.Wins || c.Matched) {
-		out = append(out, st.Dim(c.Why))
+		out = append(out, st.Dim(clean(c.Why)))
 	}
 	return out
 }
@@ -286,9 +312,9 @@ func Doctor(w io.Writer, rep doctor.Report, st Style) {
 		default:
 			mark = st.Yellow("warn")
 		}
-		fmt.Fprintf(w, "%s  %s\n", mark, st.Bold(f.Title))
+		fmt.Fprintf(w, "%s  %s\n", mark, st.Bold(clean(f.Title)))
 		for _, d := range f.Detail {
-			for _, line := range wrap(d, wrapWidth-6) {
+			for _, line := range wrap(clean(d), wrapWidth-6) {
 				fmt.Fprintf(w, "      %s\n", st.Dim(line))
 			}
 		}

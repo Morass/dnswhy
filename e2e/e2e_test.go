@@ -403,3 +403,66 @@ func TestScopeWithoutANameserverIsExplained(t *testing.T) {
 		t.Errorf("the scope that cannot answer should be named:\n%s", out)
 	}
 }
+
+// A hosts file can hold anything: whatever is in it is shown, never executed
+// by the reader's terminal.
+func TestTerminalEscapesFromAFileAreShownNotExecuted(t *testing.T) {
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	line := "203.0.113.1 \x1b[2J\x1b[Hevil.example\n203.0.113.2 \x1b[2J\x1b[Hevil.example\n"
+	if err := os.WriteFile(hosts, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := runIn(t, "doctor", "--scutil-file", filepath.Join("..", "testdata", "simple.scutil"),
+		"--hosts-file", hosts, "--resolver-dir", filepath.Join(dir, "none"))
+	if strings.Contains(got.stdout, "\x1b[2J") {
+		t.Errorf("an escape sequence from a file reached the terminal:\n%q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, `\x1b`) {
+		t.Errorf("the escape should be shown as text:\n%s", got.stdout)
+	}
+}
+
+// A file in the resolver directory is read only if it could be a resolver file.
+func TestOversizedResolverFileIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	resolvers := filepath.Join(dir, "resolver")
+	if err := os.Mkdir(resolvers, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, 2<<20)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(filepath.Join(resolvers, "corp.internal"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := runIn(t, "doctor", "--scutil-file", filepath.Join("..", "testdata", "simple.scutil"),
+		"--resolver-dir", resolvers, "--hosts-file", filepath.Join(dir, "none"))
+	if !strings.Contains(got.stdout, "not a resolver file") {
+		t.Errorf("an oversized file should be refused and reported:\n%s", got.stdout)
+	}
+	if strings.Contains(got.stdout, "xxxxxxxx") {
+		t.Errorf("its contents were printed:\n%s", got.stdout[:200])
+	}
+}
+
+// A hosts file too large to be one is refused rather than read in part: a
+// truncated hosts file answers different names than the real one.
+func TestOversizedHostsFileIsRefusedNotTruncated(t *testing.T) {
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	f, err := os.Create(hosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(9 << 20); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	got := runIn(t, "example.com", "--scutil-file", filepath.Join("..", "testdata", "simple.scutil"),
+		"--hosts-file", hosts, "--resolver-dir", filepath.Join(dir, "none"), "--offline")
+	if got.code != 1 || !strings.Contains(got.stderr, "not a hosts file") {
+		t.Errorf("exit %d, stderr %q", got.code, got.stderr)
+	}
+}

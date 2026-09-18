@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/morass/dnswhy/internal/dnsconf"
@@ -37,6 +38,7 @@ const (
 type options struct {
 	json        bool
 	compare     bool
+	live        bool
 	offline     bool
 	noColour    bool
 	timeout     time.Duration
@@ -48,6 +50,7 @@ type options struct {
 func (o *options) register(fs *flag.FlagSet) {
 	fs.BoolVar(&o.json, "json", false, "print the findings as JSON")
 	fs.BoolVar(&o.compare, "compare", false, "also ask the default nameserver, even for a name a private scope claims")
+	fs.BoolVar(&o.live, "live", false, "resolve for real even though the configuration came from a file")
 	fs.BoolVar(&o.offline, "offline", false, "explain the configuration without asking any nameserver")
 	fs.BoolVar(&o.noColour, "no-color", false, "never colour the output")
 	fs.DurationVar(&o.timeout, "timeout", 3*time.Second, "how long to wait for each answer")
@@ -225,62 +228,112 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 	def := match.DefaultResolver(cfg)
 	exp := render.Explanation{Result: result, HostsPath: hosts.Path, Files: dir, Default: def}
 
-	if !o.offline {
+	// Asking anything at all is only safe when the configuration on screen is
+	// this machine's: a dump captured elsewhere describes someone else's
+	// resolvers, and a name that is private there would go to whatever this
+	// machine uses. A replayed configuration is therefore explained, not
+	// resolved, unless --live says otherwise.
+	replay := o.scutilFile != "" || o.hostsFile != defaultHosts || o.resolverDir != defaultResolverDir
+	switch {
+	case o.offline:
+	case cfg.Incomplete:
+		fmt.Fprintln(stderr, "dnswhy: the configuration could not be read to the end, so nothing was asked; the explanation below may be missing a resolver")
+	case replay && !o.live:
+		// explained only; --live is the opt-in
+	default:
 		sys := lookup.System(name, o.timeout)
 		exp.System = &sys
+
 		asked := map[string]bool{}
-		// resolver(5): the resolvers listed for a scope are tried in turn until
-		// one answers, so a dead first entry must not be reported as the
-		// scope failing.
-		ask := func(r dnsconf.Resolver) {
-			var failures []lookup.Answer
-			for i := range r.Nameservers {
-				server := serverAddress(r, i)
-				if asked[server] {
-					continue
-				}
-				asked[server] = true
-				// name keeps any trailing dot the user typed: it tells the
-				// system resolver the name is absolute and must not be
-				// expanded with a search domain.
-				got := lookup.Direct(server, name, o.timeout)
-				if got.OK() {
+		// ask works through one resolver's nameservers, and then through the
+		// resolvers that share its domain, exactly as resolver(5) describes:
+		// another server is tried when one does not answer, never when it
+		// answers that the name is not there.
+		ask := func(chain []dnsconf.Resolver) bool {
+			for _, r := range chain {
+				for i := range r.Nameservers {
+					server, ok := serverAddress(r, i)
+					if !ok {
+						exp.Direct = append(exp.Direct, lookup.Answer{
+							Via:    r.Nameservers[i],
+							Status: "unusable",
+							Detail: "the configuration gives this as a nameserver, and it is not an address",
+						})
+						continue
+					}
+					if asked[server] {
+						continue
+					}
+					asked[server] = true
+					// name keeps any trailing dot the user typed: it tells the
+					// system resolver the name is absolute and must not be
+					// expanded with a search domain.
+					got := lookup.Direct(server, name, o.timeout)
 					exp.Direct = append(exp.Direct, got)
-					return
+					if got.OK() || got.Answered() {
+						return true
+					}
 				}
-				failures = append(failures, got)
 			}
-			// Nothing answered: show every server that was asked, so the one
-			// that appears is never a mystery.
-			exp.Direct = append(exp.Direct, failures...)
-		}
-		// By default dnswhy asks exactly what this Mac would ask and nothing
-		// else: sending a name that a private scope claims to a public
-		// nameserver would hand an internal hostname to a stranger. --compare
-		// is the way to ask anyway, and says so in the help.
-		if result.Mechanism == match.Unicast && result.Winner != nil {
-			ask(*result.Winner)
-		}
-		if o.compare && def != nil {
-			ask(*def)
+			return false
 		}
 
-		// A name with no dot is tried as each expansion before it is tried on
-		// its own, so say what each of those attempts actually returns: for a
-		// name that does not resolve, that is the whole answer. Each question
-		// goes only to the resolver that would have been asked for it anyway.
+		// Only a name that a nameserver would be asked about is asked about:
+		// a hosts entry and a Bonjour name reach no nameserver at all.
+		if result.Mechanism == match.Unicast && len(result.Chain) > 0 {
+			ask(result.Chain)
+		}
+		if o.compare && def != nil && result.Mechanism == match.Unicast {
+			ask([]dnsconf.Resolver{*def})
+		}
+
+		// A name with no dot is tried as each expansion in turn, and macOS
+		// stops at the first that answers - so dnswhy stops there too, rather
+		// than handing the later expansions to nameservers that would never
+		// have seen them.
 		for _, at := range result.Attempts {
-			if at.Name == result.Query || at.InHosts || at.Mechanism != match.Unicast {
+			if at.Name == result.Query {
 				continue
 			}
-			r, ok := resolverByIndex(cfg, at.WinnerIndex)
-			if !ok || len(r.Nameservers) == 0 {
+			if at.InHosts {
+				break // the hosts file answers; nothing is asked
+			}
+			if at.Mechanism != match.Unicast || !at.HasWinner {
 				continue
 			}
-			got := lookup.Direct(serverAddress(r, 0), at.Name, o.timeout)
-			exp.Attempts = append(exp.Attempts, render.AttemptAnswer{Name: at.Name, Answer: got})
+			r, ok := cfg.ByID(at.WinnerID)
+			if !ok {
+				continue
+			}
+			sub := match.Explain(cfg, hosts, at.Name)
+			chain := sub.Chain
+			if len(chain) == 0 {
+				chain = []dnsconf.Resolver{r}
+			}
+			answered := false
+			for _, res := range chain {
+				for i := range res.Nameservers {
+					server, ok := serverAddress(res, i)
+					if !ok {
+						continue
+					}
+					got := lookup.Direct(server, at.Name, o.timeout)
+					exp.Attempts = append(exp.Attempts, render.AttemptAnswer{Name: at.Name, Answer: got})
+					if got.OK() || got.Answered() {
+						answered = true
+						break
+					}
+				}
+				if answered {
+					break
+				}
+			}
+			if answered {
+				break // macOS would stop here as well
+			}
 		}
 	}
+
 	var attemptAnswers []lookup.Answer
 	for _, a := range exp.Attempts {
 		attemptAnswers = append(attemptAnswers, a.Answer)
@@ -303,18 +356,21 @@ const maxFileSize = 8 << 20
 
 // readAtMost reads an ordinary file, and no more of it than it should need.
 func readAtMost(path string, limit int64) ([]byte, error) {
-	info, err := os.Stat(path)
+	// Open first and check the descriptor: between a check on the path and the
+	// open that follows it, the entry can become a link to something else or a
+	// pipe that never returns.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not an ordinary file", path)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
@@ -368,15 +424,30 @@ func resolverByIndex(cfg dnsconf.Config, index int) (dnsconf.Resolver, bool) {
 // port when it sets one: a local dnsmasq or a container often listens somewhere
 // other than 53, and asking port 53 there would answer a different question
 // from the one the system asks.
-func serverAddress(r dnsconf.Resolver, n int) string {
-	ns := r.Nameservers[n]
+func serverAddress(r dnsconf.Resolver, n int) (string, bool) {
+	ns := strings.TrimSpace(r.Nameservers[n])
+	// Whatever produced this text, it has to be an address before anything is
+	// sent to it or printed as part of a command.
+	host, port := ns, ""
+	if h, p, err := net.SplitHostPort(ns); err == nil {
+		host, port = h, p
+	}
+	if net.ParseIP(strings.Trim(host, "[]")) == nil {
+		return "", false
+	}
+	if port != "" {
+		if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+			return "", false
+		}
+		return net.JoinHostPort(strings.Trim(host, "[]"), port), true
+	}
 	if r.Port == 0 || r.Port == 53 {
-		return ns
+		return net.JoinHostPort(strings.Trim(host, "[]"), "53"), true
 	}
-	if _, _, err := net.SplitHostPort(ns); err == nil {
-		return ns // the address already carries a port
+	if r.Port < 1 || r.Port > 65535 {
+		return "", false
 	}
-	return net.JoinHostPort(strings.Trim(ns, "[]"), strconv.Itoa(r.Port))
+	return net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(r.Port)), true
 }
 
 func doctorCmd(args []string, stdout, stderr io.Writer) int {
@@ -495,11 +566,17 @@ Examples:
   dnswhy example.com --offline     no lookups, just the rules
 
   By default it asks only the nameserver this Mac would ask for that name, so a
-  name that a VPN or container scope claims is never sent to a public resolver.
+  name that a VPN or container scope claims is never sent to a public resolver,
+  and a name answered from the hosts file or by Bonjour is not sent anywhere.
   --compare asks the default nameserver as well, which is what a plain dig does.
+
+  A configuration read from a file (--scutil-file, --hosts-file, --resolver-dir)
+  describes another machine, so it is explained and nothing is asked; --live
+  resolves for real against this machine's network anyway.
 
 Flags:
   --compare                 also ask the default nameserver (sends the name outside its scope)
+  --live                    resolve for real even though the configuration came from a file
   --offline                 explain the configuration without asking anything
   --json                    print the findings as JSON
   --timeout <duration>      how long to wait for each answer (default 3s)

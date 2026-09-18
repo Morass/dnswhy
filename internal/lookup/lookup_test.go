@@ -275,3 +275,56 @@ func TestParseReplyRejectsReservedLabelTypes(t *testing.T) {
 		}
 	}
 }
+
+// A reply that claims the name does not exist, without echoing the question,
+// is not an answer to anything.
+func TestNegativeReplyMustEchoTheQuestion(t *testing.T) {
+	q, _ := buildQuery("example.com", typeA)
+	msg := []byte{q[0], q[1], 0x81, 0x83, 0, 0, 0, 0, 0, 0, 0, 0} // NXDOMAIN, no question
+	_, _, status, _ := parseReply(msg, q)
+	if status != "bad reply" {
+		t.Errorf("status = %q, want 'bad reply'", status)
+	}
+}
+
+// One family answering "nothing here" while the other does not answer at all
+// is not proof that a name has no address.
+func TestHalfAnsweredQuestionIsReportedAsIncomplete(t *testing.T) {
+	var seen int
+	server := startServer(t, func(q []byte) []byte {
+		seen++
+		if q[len(q)-3] == 0 && q[len(q)-4] == 0 { // unreachable guard
+			return nil
+		}
+		if q[len(q)-3] == 28 { // AAAA: say nothing at all
+			return nil
+		}
+		return reply(q, 0, 0, nil) // A: NOERROR with no addresses
+	})
+	got := Direct(server, "half.example", 300*time.Millisecond)
+	if got.Status != "incomplete" {
+		t.Errorf("status = %q, want incomplete (A said no address, AAAA never answered)", got.Status)
+	}
+	if got.ByType["A"] != "no address" || got.ByType["AAAA"] != "timeout" {
+		t.Errorf("per-question statuses = %v", got.ByType)
+	}
+}
+
+// A nameserver that answers "this name does not exist" has answered: the
+// resolver does not go looking for a different opinion.
+func TestAnsweredCoversNegativeReplies(t *testing.T) {
+	for status, want := range map[string]bool{
+		"":             true,
+		"no such name": true,
+		"no address":   true,
+		"truncated":    true,
+		"timeout":      false,
+		"unreachable":  false,
+		"SERVFAIL":     false,
+		"bad reply":    false,
+	} {
+		if got := (Answer{Status: status}).Answered(); got != want {
+			t.Errorf("Answer{%q}.Answered() = %v, want %v", status, got, want)
+		}
+	}
+}

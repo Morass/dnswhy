@@ -4,6 +4,8 @@ package verdict
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/morass/dnswhy/internal/dnsconf"
@@ -61,8 +63,8 @@ func Lines(in Input) []string {
 	if scoped && in.Default != nil && winner.Index != in.Default.Index && r.Mechanism != match.FromHosts {
 		out = append(out, fmt.Sprintf("%s is answered by the %s scope, which dig knows nothing about:", name, winner.Domain))
 		out = append(out, fmt.Sprintf("dig reads /etc/resolv.conf and would ask %s. To ask what your", strings.Join(in.Default.Nameservers, " or ")))
-		if len(winner.Nameservers) > 0 {
-			out = append(out, fmt.Sprintf("applications ask, name the server yourself:  dig @%s %s", winner.Nameservers[0], name))
+		if cmd := digCommand(*winner, name); cmd != "" {
+			out = append(out, "applications ask, name the server yourself:  "+cmd)
 		}
 	}
 
@@ -72,12 +74,12 @@ func Lines(in Input) []string {
 			switch {
 			case sys.OK() && !d.OK():
 				out = append(out, fmt.Sprintf("Your applications resolve this name (%s) while a direct question to %s", strings.Join(sys.Addresses, ", "), d.Via))
-				out = append(out, fmt.Sprintf("returns %s. The machine is fine; the tool you are testing with is looking", strings.ToLower(orNoAnswer(d.Status))))
-				out = append(out, "in the wrong place.")
+				out = append(out, fmt.Sprintf("returned %s. Applications are getting an answer, so whatever you are", strings.ToLower(orNoAnswer(d.Status))))
+				out = append(out, "testing with is asking something else - or the system answer is a cached one.")
 			case !sys.OK() && d.OK():
-				out = append(out, fmt.Sprintf("%s answers this name (%s) but your applications do not see it.", d.Via, strings.Join(d.Addresses, ", ")))
-				out = append(out, "Something on this Mac is shadowing it: check the winning scope above and")
-				out = append(out, fmt.Sprintf("%s.", in.HostsPath))
+				out = append(out, fmt.Sprintf("%s answers this name (%s) but your applications did not get it", d.Via, strings.Join(d.Addresses, ", ")))
+				out = append(out, fmt.Sprintf("(%s). Something between them is in the way: the scope that wins above,", orNoAnswer(sys.Status)))
+				out = append(out, fmt.Sprintf("%s, or a cached negative answer.", in.HostsPath))
 			case sys.OK() && d.OK() && !sameAddrs(sys.Addresses, d.Addresses):
 				out = append(out, fmt.Sprintf("Your applications get %s while %s says %s.", strings.Join(sys.Addresses, ", "), d.Via, strings.Join(d.Addresses, ", ")))
 				out = append(out, "Two answers for one name: either they came from different nameservers, or")
@@ -90,7 +92,7 @@ func Lines(in Input) []string {
 	if in.System != nil && len(in.Direct) > 0 && in.System.OK() {
 		agreed := true
 		for _, d := range in.Direct {
-			if !d.OK() || !sameAddrs(in.System.Addresses, d.Addresses) {
+			if !d.OK() || d.Status == "truncated" || !sameAddrs(in.System.Addresses, d.Addresses) {
 				agreed = false
 			}
 		}
@@ -104,14 +106,28 @@ func Lines(in Input) []string {
 	// about the resolver that would have answered belongs in the verdict.
 	// Nothing resolved at all. This is the most common thing a person types
 	// dnswhy for, and saying only "no answer" twice helps nobody.
-	if in.System != nil && !in.System.OK() && r.Mechanism != match.FromHosts {
+	anyDirect := false
+	for _, d := range in.Direct {
+		if d.OK() {
+			anyDirect = true
+		}
+	}
+	if in.System != nil && !in.System.OK() && !anyDirect && r.Mechanism != match.FromHosts {
 		out = append(out, nothingResolved(in)...)
 	}
 
-	if winner != nil && scoped && !winner.Reachable && r.Mechanism != match.FromHosts {
-		out = append(out, fmt.Sprintf("The %s scope is marked not reachable, so this name fails while the", winner.Domain))
-		out = append(out, "connection that provides it (a VPN, a container, a local dnsmasq) is down -")
-		out = append(out, "it does not fall back to the default nameservers.")
+	// A scope marked unreachable is worth saying only when nothing answered:
+	// the flag is a hint from the system configuration, and an answer beats it.
+	resolved := in.System != nil && in.System.OK()
+	for _, d := range in.Direct {
+		if d.OK() {
+			resolved = true
+		}
+	}
+	if winner != nil && scoped && !winner.Reachable && r.Mechanism != match.FromHosts && !resolved {
+		out = append(out, fmt.Sprintf("The %s scope is marked not reachable, so while the connection that", winner.Domain))
+		out = append(out, "provides it (a VPN, a container, a local dnsmasq) is down this name fails")
+		out = append(out, "rather than falling back to the default nameservers.")
 	}
 
 	return out
@@ -135,9 +151,20 @@ func nothingResolved(in Input) []string {
 
 	name := in.Result.Query
 	switch {
-	case len(statuses) == 0:
+	case len(statuses) == 0 && in.System == nil:
 		out = append(out, fmt.Sprintf("Nothing resolved %s, and no nameserver was asked to say why.", name))
-		out = append(out, "Run it again without --offline to see what the nameserver answers.")
+		out = append(out, "Run it again without --offline to see what a nameserver answers.")
+	case len(statuses) == 0 && in.Result.Mechanism == match.Multicast:
+		out = append(out, fmt.Sprintf("Nothing on the local network claimed %s. No nameserver was asked,", name))
+		out = append(out, "because a .local name is never a question for one.")
+	case len(statuses) == 0:
+		out = append(out, fmt.Sprintf("The system resolver returned nothing for %s, and no nameserver was", name))
+		out = append(out, "asked directly: nothing in the configuration above would have been given")
+		out = append(out, "this name to answer.")
+	case statuses["incomplete"] != "":
+		out = append(out, fmt.Sprintf("%s produced no address, but the two questions did not agree: one came", name))
+		out = append(out, "back empty and the other did not come back at all, so this is not proof")
+		out = append(out, "that the name has no address.")
 	case statuses["no address"] != "":
 		out = append(out, fmt.Sprintf("%s exists in DNS but has no IPv4 or IPv6 address, so there is nothing", name))
 		out = append(out, "to connect to. A name can exist and carry only mail or text records.")
@@ -150,8 +177,9 @@ func nothingResolved(in Input) []string {
 		if server == "" {
 			server = statuses["unreachable"]
 		}
-		out = append(out, fmt.Sprintf("%s did not answer in time, so this is a connection problem rather", server))
-		out = append(out, "than a naming one: the nameserver, or the link to it, is down.")
+		out = append(out, fmt.Sprintf("%s did not answer in time. Nothing here says the name is wrong: an", server))
+		out = append(out, "unanswered question usually means the nameserver or the link to it is")
+		out = append(out, "unavailable, or that something is dropping DNS on the way.")
 	default:
 		for status, via := range statuses {
 			out = append(out, fmt.Sprintf("%s answered %q and gave no address.", via, status))
@@ -165,6 +193,29 @@ func nothingResolved(in Input) []string {
 		out = append(out, "the internet, write it in full.")
 	}
 	return out
+}
+
+// digCommand is the command that reproduces what applications get, or nothing
+// at all when the configuration does not give a usable address to put in it.
+func digCommand(r dnsconf.Resolver, name string) string {
+	if len(r.Nameservers) == 0 {
+		return ""
+	}
+	host := strings.Trim(strings.TrimSpace(r.Nameservers[0]), "[]")
+	port := r.Port
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		host = strings.Trim(h, "[]")
+		if n, err := strconv.Atoi(p); err == nil {
+			port = n
+		}
+	}
+	if net.ParseIP(host) == nil {
+		return ""
+	}
+	if port != 0 && port != 53 {
+		return fmt.Sprintf("dig -p %d @%s %s", port, host, name)
+	}
+	return fmt.Sprintf("dig @%s %s", host, name)
 }
 
 func orNoAnswer(s string) string {

@@ -19,8 +19,8 @@
 <text x="18.00" y="308.32" fill="#d5dae3" xml:space="preserve">  files.corp.internal is answered by the corp.internal scope, which dig knows nothing about:</text>
 <text x="18.00" y="326.32" fill="#d5dae3" xml:space="preserve">  dig reads /etc/resolv.conf and would ask 192.0.2.53. To ask what your</text>
 <text x="18.00" y="344.32" fill="#d5dae3" xml:space="preserve">  applications ask, name the server yourself:  dig @198.51.100.53 files.corp.internal</text>
-<text x="18.00" y="362.32" fill="#d5dae3" xml:space="preserve">  The corp.internal scope is marked not reachable, so this name fails while the</text>
-<text x="18.00" y="380.32" fill="#d5dae3" xml:space="preserve">  connection that provides it (a VPN, a container, a local dnsmasq) is down -</text>
-<text x="18.00" y="398.32" fill="#d5dae3" xml:space="preserve">  it does not fall back to the default nameservers.</text>
+<text x="18.00" y="362.32" fill="#d5dae3" xml:space="preserve">  The corp.internal scope is marked not reachable, so while the connection that</text>
+<text x="18.00" y="380.32" fill="#d5dae3" xml:space="preserve">  provides it (a VPN, a container, a local dnsmasq) is down this name fails</text>
+<text x="18.00" y="398.32" fill="#d5dae3" xml:space="preserve">  rather than falling back to the default nameservers.</text>
 <text x="18.00" y="416.32" fill="#a6e3a1" font-weight="700" xml:space="preserve">$</text>
 </svg>

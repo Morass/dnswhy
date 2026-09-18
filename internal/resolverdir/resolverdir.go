@@ -7,12 +7,23 @@ package resolverdir
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
+
+// maxFileSize is generous for a file that holds a nameserver line or two, and
+// small enough that a file left in this directory by mistake cannot be read
+// into memory whole.
+const maxFileSize = 1 << 20
+
+// maxUnknown caps how many unrecognised keywords are remembered from one file.
+const maxUnknown = 20
 
 // File is one file in the resolver directory.
 type File struct {
@@ -62,20 +73,6 @@ func Load(dir string) (Dir, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		path := filepath.Join(dir, name)
-		// Only ordinary files are read. A symlink here would make the tool
-		// print whatever it points at, and a fifo would block forever.
-		info, err := os.Lstat(path)
-		if err != nil {
-			d.Files = append(d.Files, File{Path: path, Name: name, Domain: strings.ToLower(name), Err: err.Error()})
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			d.Files = append(d.Files, File{
-				Path: path, Name: name, Domain: strings.ToLower(name),
-				Err: "not an ordinary file (" + kind(info.Mode()) + "), so it was not read",
-			})
-			continue
-		}
 		f, err := loadFile(path, name)
 		if err != nil {
 			f.Err = err.Error()
@@ -103,13 +100,29 @@ func kind(m os.FileMode) string {
 
 func loadFile(path, name string) (File, error) {
 	f := File{Path: path, Name: name, Domain: strings.ToLower(name)}
-	fh, err := os.Open(path)
+	// Open first and check the descriptor afterwards: checking the path and
+	// then opening it leaves a window in which the entry can be replaced by a
+	// link to something else, or by a pipe that never returns.
+	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return f, err
+		}
+		return f, fmt.Errorf("it could not be opened as an ordinary file (%v)", err)
+	}
+	defer fh.Close()
+	info, err := fh.Stat()
 	if err != nil {
 		return f, err
 	}
-	defer fh.Close()
+	if !info.Mode().IsRegular() {
+		return f, fmt.Errorf("not an ordinary file (%s), so it was not read", kind(info.Mode()))
+	}
+	if info.Size() > maxFileSize {
+		return f, fmt.Errorf("it is %d bytes, which is not a resolver file, so it was not read", info.Size())
+	}
 
-	sc := bufio.NewScanner(fh)
+	sc := bufio.NewScanner(io.LimitReader(fh, maxFileSize))
 	for sc.Scan() {
 		line := sc.Text()
 		if i := strings.IndexByte(line, '#'); i >= 0 {
@@ -151,7 +164,9 @@ func loadFile(path, name string) (File, error) {
 			// resolv.conf keywords macOS accepts but that do not change which
 			// resolver is chosen.
 		default:
-			f.Unknown = append(f.Unknown, fields[0])
+			if len(f.Unknown) < maxUnknown {
+				f.Unknown = append(f.Unknown, fields[0])
+			}
 		}
 	}
 	return f, sc.Err()

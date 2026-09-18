@@ -24,13 +24,27 @@ type Answer struct {
 	Addresses []string `json:"addresses,omitempty"`
 	CNAMEs    []string `json:"cnames,omitempty"`
 	// Status is empty on success, otherwise a short machine-readable word such
-	// as "NXDOMAIN", "timeout" or "refused".
+	// as "no such name", "timeout" or "refused".
 	Status string `json:"status,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	// ByType is what each question returned on its own, so "this name has no
+	// address" is only ever said when both questions actually said so.
+	ByType map[string]string `json:"by_type,omitempty"`
 }
 
 // OK reports whether the answer carries addresses.
 func (a Answer) OK() bool { return len(a.Addresses) > 0 }
+
+// Answered reports whether the nameserver answered the question, even if the
+// answer was "there is nothing here". A resolver moves on to the next server
+// when one does not answer; it does not second-guess one that did.
+func (a Answer) Answered() bool {
+	switch a.Status {
+	case "", "no such name", "no address", "truncated":
+		return true
+	}
+	return false
+}
 
 // Summary is a one-line description of the outcome.
 func (a Answer) Summary() string {
@@ -56,7 +70,14 @@ func System(name string, timeout time.Duration) Answer {
 	defer cancel()
 
 	if _, err := exec.LookPath("dscacheutil"); err == nil {
-		out, err := exec.CommandContext(ctx, "dscacheutil", "-q", "host", "-a", "name", name).Output()
+		cmd := exec.CommandContext(ctx, "dscacheutil", "-q", "host", "-a", "name", name)
+		// A killed child can leave a grandchild holding stdout; without this
+		// the read would outlive the deadline it was given.
+		cmd.WaitDelay = time.Second
+		var buf bytes.Buffer
+		cmd.Stdout = &limitedWriter{w: &buf, left: 1 << 20}
+		err := cmd.Run()
+		out := buf.Bytes()
 		if err == nil {
 			a.Addresses = parseDSCacheUtil(string(out))
 			if len(a.Addresses) == 0 {
@@ -91,6 +112,23 @@ func System(name string, timeout time.Duration) Answer {
 	return a
 }
 
+// limitedWriter stops a command that will not stop talking.
+type limitedWriter struct {
+	w    *bytes.Buffer
+	left int
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if l.left <= 0 {
+		return len(p), nil // swallow the rest; the answer is already too long to be one
+	}
+	if len(p) > l.left {
+		p = p[:l.left]
+	}
+	l.left -= len(p)
+	return l.w.Write(p)
+}
+
 // parseDSCacheUtil pulls the addresses out of dscacheutil's record output.
 func parseDSCacheUtil(out string) []string {
 	var addrs []string
@@ -113,6 +151,13 @@ func parseDSCacheUtil(out string) []string {
 	return addrs
 }
 
+func or(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
 // Direct asks one nameserver over UDP, the way dig does: no /etc/hosts, no
 // scoped resolvers, no Bonjour.
 func Direct(server, name string, timeout time.Duration) Answer {
@@ -125,12 +170,26 @@ func Direct(server, name string, timeout time.Duration) Answer {
 		addr = net.JoinHostPort(strings.Trim(server, "[]"), "53")
 	}
 
-	for _, qtype := range []uint16{typeA, typeAAAA} {
-		addrs, cnames, status, detail := query(addr, name, qtype, timeout)
+	a.ByType = map[string]string{}
+	for _, q := range []struct {
+		name  string
+		qtype uint16
+	}{{"A", typeA}, {"AAAA", typeAAAA}} {
+		addrs, cnames, status, detail := query(addr, name, q.qtype, timeout)
 		a.Addresses = append(a.Addresses, addrs...)
 		a.CNAMEs = append(a.CNAMEs, cnames...)
+		a.ByType[q.name] = status
 		if status != "" && a.Status == "" {
 			a.Status, a.Detail = status, detail
+		}
+	}
+	// "It has no address" is a claim about both families, so it is only made
+	// when both questions came back saying so.
+	if !a.OK() {
+		aSt, quadA := a.ByType["A"], a.ByType["AAAA"]
+		if (aSt == "no address" || quadA == "no address") && aSt != quadA {
+			a.Status = "incomplete"
+			a.Detail = fmt.Sprintf("the A question said %q and the AAAA question said %q, so this is not a complete answer", or(aSt, "nothing"), or(quadA, "nothing"))
 		}
 	}
 	if len(a.Addresses) > 0 {
@@ -228,6 +287,24 @@ func parseReply(msg []byte, question []byte) (addrs, cnames []string, status, de
 		return nil, nil, "bad reply", "the packet was a question, not an answer"
 	}
 	truncated := msg[2]&0x02 != 0
+
+	// The question comes first: a reply that does not echo the question asked
+	// is not an answer to it, and its rcode means nothing here. A bare
+	// "does not exist" with no question at all is the cheapest lie to send.
+	qd := int(msg[4])<<8 | int(msg[5])
+	an := int(msg[6])<<8 | int(msg[7])
+	if qd != 1 {
+		return nil, nil, "bad reply", "the reply did not echo exactly one question"
+	}
+	qname, off, err := readName(msg, 12)
+	if err != nil {
+		return nil, nil, "bad reply", err.Error()
+	}
+	if off+4 > len(msg) || !bytes.Equal(msg[12:off+4], question[12:]) {
+		return nil, nil, "bad reply", "the reply answered a different question"
+	}
+	off += 4
+
 	switch rcode := msg[3] & 0x0f; rcode {
 	case 0:
 	case 2:
@@ -239,21 +316,6 @@ func parseReply(msg []byte, question []byte) (addrs, cnames []string, status, de
 	default:
 		return nil, nil, fmt.Sprintf("rcode %d", rcode), ""
 	}
-
-	qd := int(msg[4])<<8 | int(msg[5])
-	an := int(msg[6])<<8 | int(msg[7])
-	if qd != 1 {
-		return nil, nil, "bad reply", "the reply did not echo exactly one question"
-	}
-	// The question section must be the one that was sent, byte for byte.
-	qname, off, err := readName(msg, 12)
-	if err != nil {
-		return nil, nil, "bad reply", err.Error()
-	}
-	if off+4 > len(msg) || !bytes.Equal(msg[12:off+4], question[12:]) {
-		return nil, nil, "bad reply", "the reply answered a different question"
-	}
-	off += 4
 
 	// Only records owned by the question, or by a name a CNAME in this reply
 	// pointed at, are an answer to it.
@@ -300,11 +362,6 @@ func parseReply(msg []byte, question []byte) (addrs, cnames []string, status, de
 		return nil, cnames, "no address", "the name exists, but it has no address record of this kind"
 	}
 	return addrs, cnames, "", ""
-}
-
-func skipName(msg []byte, off int) (int, error) {
-	_, next, err := readName(msg, off)
-	return next, err
 }
 
 // readName decodes a possibly compressed name and returns the offset just past

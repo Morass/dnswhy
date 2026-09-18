@@ -67,7 +67,11 @@ type Candidate struct {
 // appended before it is tried on its own, and those expanded names can be
 // claimed by a different scope than the bare one.
 type Attempt struct {
-	Name         string    `json:"name"`
+	Name string `json:"name"`
+	// HasWinner says whether a resolver would answer this name at all; the
+	// winner is identified by WinnerID, never by the number scutil printed.
+	HasWinner    bool      `json:"has_winner"`
+	WinnerID     int       `json:"winner_id,omitempty"`
 	WinnerIndex  int       `json:"winner_index,omitempty"`
 	WinnerDomain string    `json:"winner_domain,omitempty"`
 	Mechanism    Mechanism `json:"mechanism"`
@@ -86,6 +90,10 @@ type Result struct {
 	Hosts       []hostsfile.Entry  `json:"hosts,omitempty"`
 	Candidates  []Candidate        `json:"candidates"`
 	Winner      *dnsconf.Resolver  `json:"winner,omitempty"`
+	// Chain is the winner followed by the resolvers that claim the same domain
+	// with a higher order value: resolver(5) queries them in turn, so a name
+	// does not fail because the first of them is down.
+	Chain       []dnsconf.Resolver `json:"chain,omitempty"`
 	Mechanism   Mechanism          `json:"mechanism"`
 	Ignored     []dnsconf.Resolver `json:"interface_scoped,omitempty"`
 }
@@ -119,6 +127,8 @@ func Explain(cfg dnsconf.Config, hosts hostsfile.File, name string) Result {
 			sub := explainOne(cfg, hosts, q)
 			a := Attempt{Name: q, Mechanism: sub.Mechanism, InHosts: len(sub.Hosts) > 0}
 			if sub.Winner != nil {
+				a.HasWinner = true
+				a.WinnerID = sub.Winner.ID
 				a.WinnerIndex = sub.Winner.Index
 				a.WinnerDomain = sub.Winner.Domain
 			}
@@ -188,6 +198,15 @@ func explainOne(cfg dnsconf.Config, hosts hostsfile.File, name string) Result {
 		res.Candidates[best].Wins = true
 		w := res.Candidates[best].Resolver
 		res.Winner = &w
+		// Everything that matched just as specifically is a fallback for it.
+		for _, c := range res.Candidates {
+			if c.Matched && !c.CannotAnswer && c.Labels == res.Candidates[best].Labels {
+				res.Chain = append(res.Chain, c.Resolver)
+			}
+		}
+		sort.SliceStable(res.Chain, func(i, j int) bool {
+			return better(Candidate{Resolver: res.Chain[i], Labels: 0}, Candidate{Resolver: res.Chain[j], Labels: 0})
+		})
 		if res.Mechanism != FromHosts {
 			if w.IsMulticast() {
 				res.Mechanism = Multicast
