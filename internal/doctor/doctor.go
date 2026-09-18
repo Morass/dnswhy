@@ -94,7 +94,7 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 		}
 		if !res.Reachable {
 			add(Warn, fmt.Sprintf("Scope %q points at an unreachable nameserver: %s", res.Domain, strings.Join(res.Nameservers, ", ")),
-				fmt.Sprintf("Every name under %s fails%s instead of falling back to the default nameservers.", res.Domain, timeoutPhrase(res.Timeout)),
+				fmt.Sprintf("Every name under %s fails%s, instead of falling back to the default nameservers.", res.Domain, timeoutPhrase(res.Timeout)),
 				"That is how a disconnected VPN or a stopped container makes one domain, and only that domain, stop working.")
 		}
 	}
@@ -139,14 +139,19 @@ func Run(cfg dnsconf.Config, dir resolverdir.Dir, hosts hostsfile.File) Report {
 			add(Note, fmt.Sprintf("%s adds a search domain and nothing else", f.Path),
 				fmt.Sprintf("It appends %s to single-label names; it cannot answer anything itself.", strings.Join(f.SearchDomains, ", ")))
 		}
-		if len(f.Nameservers) == 0 && len(f.SearchDomains) == 0 {
+		if len(f.Nameservers) == 0 && len(f.SearchDomains) == 0 && len(f.Unknown) == 0 {
 			add(Warn, fmt.Sprintf("%s has no nameserver line", f.Path),
 				"A resolver file without a nameserver does nothing.")
 		}
 		if len(f.Unknown) > 0 {
-			add(Warn, fmt.Sprintf("%s has lines macOS does not understand", f.Path),
+			detail := []string{
 				strings.Join(f.Unknown, " / "),
-				"Only nameserver, domain, search, port, timeout and search_order are read.")
+				"Only nameserver, domain, search, port, timeout and search_order are read.",
+			}
+			if len(f.Nameservers) == 0 && len(f.SearchDomains) == 0 {
+				detail = append(detail, "Nothing else in the file is usable, so it has no effect at all.")
+			}
+			add(Warn, fmt.Sprintf("%s has lines macOS does not understand", f.Path), detail...)
 		}
 		if len(f.Nameservers) > 0 && !inConfig[f.Domain] {
 			add(Warn, fmt.Sprintf("%s is not in the live configuration", f.Path),
@@ -236,7 +241,7 @@ func timeoutPhrase(t int) string {
 	if t <= 0 {
 		return ""
 	}
-	return fmt.Sprintf(", after a %ds wait", t)
+	return fmt.Sprintf(" after a %ds wait", t)
 }
 
 func joinOr(list []string, fallback string) string {
