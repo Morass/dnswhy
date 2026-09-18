@@ -4,7 +4,7 @@
 //
 //	resolver #8
 //	  domain   : example.internal
-//	  nameserver[0] : 10.0.0.53
+//	  nameserver[0] : 198.51.100.53
 //	  search domain[0] : corp.example
 //	  options  : mdns
 //	  timeout  : 5

@@ -14,6 +14,30 @@ import (
 	"github.com/morass/dnswhy/internal/resolverdir"
 )
 
+// wrapWidth is the column the long explanatory lines wrap at. It is fixed
+// rather than taken from the terminal so the same text appears in a narrow
+// window, a wide one and a file.
+const wrapWidth = 78
+
+// wrap breaks text into lines of at most width runes, on word boundaries. A
+// word longer than the width is left alone rather than cut in half.
+func wrap(text string, width int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	lines := []string{words[0]}
+	for _, w := range words[1:] {
+		last := len(lines) - 1
+		if len([]rune(lines[last]))+1+len([]rune(w)) <= width {
+			lines[last] += " " + w
+			continue
+		}
+		lines = append(lines, w)
+	}
+	return lines
+}
+
 // Style holds the escape sequences to use, or nothing at all when colour is off.
 type Style struct{ Colour bool }
 
@@ -102,11 +126,10 @@ func Explain(w io.Writer, e Explanation, st Style) {
 		shown++
 	}
 	if n := len(skipped); n > 0 {
-		list := strings.Join(skipped, ", ")
-		if len(list) > 60 {
-			list = list[:57] + "..."
+		text := fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s)", n, strings.Join(skipped, ", "))
+		for _, line := range wrap(text, wrapWidth-2) {
+			fmt.Fprintf(w, "  %s\n", st.Dim(line))
 		}
-		fmt.Fprintf(w, "  %s\n", st.Dim(fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s)", n, list)))
 	}
 	if n := len(r.Ignored); n > 0 {
 		fmt.Fprintf(w, "  %s\n", st.Dim(fmt.Sprintf("(%d interface-bound resolver(s) not shown: they answer only interface-bound queries)", n)))
@@ -202,7 +225,9 @@ func Doctor(w io.Writer, rep doctor.Report, st Style) {
 		}
 		fmt.Fprintf(w, "%s  %s\n", mark, st.Bold(f.Title))
 		for _, d := range f.Detail {
-			fmt.Fprintf(w, "      %s\n", st.Dim(d))
+			for _, line := range wrap(d, wrapWidth-6) {
+				fmt.Fprintf(w, "      %s\n", st.Dim(line))
+			}
 		}
 	}
 	ok, note, warn := rep.Counts()

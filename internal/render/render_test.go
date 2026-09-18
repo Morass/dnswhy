@@ -146,3 +146,23 @@ func lineContaining(t *testing.T, out, substr string) string {
 	t.Fatalf("no line contains %q in:\n%s", substr, out)
 	return ""
 }
+
+func TestLongDetailLinesAreWrapped(t *testing.T) {
+	long := strings.Repeat("word ", 40)
+	rep := doctor.Report{Findings: []doctor.Finding{{Level: doctor.Warn, Title: "t", Detail: []string{long}}}}
+	var buf bytes.Buffer
+	Doctor(&buf, rep, Style{})
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if len([]rune(line)) > wrapWidth {
+			t.Errorf("line of %d runes is wider than %d:\n%s", len([]rune(line)), wrapWidth, line)
+		}
+	}
+}
+
+func TestWrapKeepsLongWordsWhole(t *testing.T) {
+	word := strings.Repeat("x", 120)
+	got := wrap("short "+word, 20)
+	if len(got) != 2 || got[1] != word {
+		t.Errorf("wrap = %q", got)
+	}
+}

@@ -3,7 +3,6 @@
 ##
 127.0.0.1	localhost
 ::1		localhost
-255.255.255.255	broadcasthost
 198.51.100.9	pinned.corp.internal
 203.0.113.7	doubled.example
 203.0.113.8	doubled.example

@@ -104,7 +104,7 @@ func TestExplainIsQuietWhenOffline(t *testing.T) {
 
 func TestExplainHostsPin(t *testing.T) {
 	got := explain(t, "pinned.corp.internal")
-	if !strings.Contains(got.stdout, "line 7: 198.51.100.9") {
+	if !strings.Contains(got.stdout, "line 6: 198.51.100.9") {
 		t.Errorf("the hosts entry and its line must be shown:\n%s", got.stdout)
 	}
 	if !strings.Contains(got.stdout, "No nameserver is asked at all") {

@@ -14,8 +14,8 @@ func TestLoadAndLookup(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("lookup gave %d entries, want 1", len(got))
 	}
-	if got[0].Address != "198.51.100.9" || got[0].Line != 7 {
-		t.Errorf("entry = %+v, want 198.51.100.9 on line 7", got[0])
+	if got[0].Address != "198.51.100.9" || got[0].Line != 6 {
+		t.Errorf("entry = %+v, want 198.51.100.9 on line 6", got[0])
 	}
 	if n := len(f.Lookup("localhost")); n != 2 {
 		t.Errorf("localhost has %d entries, want 2 (v4 and v6)", n)
