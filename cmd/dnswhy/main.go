@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -222,12 +224,15 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 		asked := map[string]bool{}
 		// What a plain `dig` would do: ask the default nameserver.
 		if def != nil && len(def.Nameservers) > 0 {
-			exp.Direct = append(exp.Direct, lookup.Direct(def.Nameservers[0], name, o.timeout))
-			asked[def.Nameservers[0]] = true
+			server := serverAddress(*def)
+			exp.Direct = append(exp.Direct, lookup.Direct(server, name, o.timeout))
+			asked[server] = true
 		}
 		// And what the resolver that actually wins says, when it is another one.
-		if w := result.Winner; w != nil && len(w.Nameservers) > 0 && !asked[w.Nameservers[0]] {
-			exp.Direct = append(exp.Direct, lookup.Direct(w.Nameservers[0], name, o.timeout))
+		if w := result.Winner; w != nil && len(w.Nameservers) > 0 {
+			if server := serverAddress(*w); !asked[server] {
+				exp.Direct = append(exp.Direct, lookup.Direct(server, name, o.timeout))
+			}
 		}
 	}
 	exp.Verdict = verdict.Lines(verdict.Input{
@@ -239,6 +244,21 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	render.Explain(stdout, exp, style(o, stdout))
 	return 0
+}
+
+// serverAddress is the first nameserver of a resolver, with the resolver's own
+// port when it sets one: a local dnsmasq or a container often listens somewhere
+// other than 53, and asking port 53 there would answer a different question
+// from the one the system asks.
+func serverAddress(r dnsconf.Resolver) string {
+	ns := r.Nameservers[0]
+	if r.Port == 0 || r.Port == 53 {
+		return ns
+	}
+	if _, _, err := net.SplitHostPort(ns); err == nil {
+		return ns // the address already carries a port
+	}
+	return net.JoinHostPort(strings.Trim(ns, "[]"), strconv.Itoa(r.Port))
 }
 
 func doctorCmd(args []string, stdout, stderr io.Writer) int {
