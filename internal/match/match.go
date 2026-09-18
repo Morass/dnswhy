@@ -14,6 +14,13 @@
 //     an ordinary lookup.
 //   - A name with no dot is also tried with each search domain appended.
 //
+// The first three rules are the SEARCH STRATEGY section of resolver(5): a
+// query "is sent using a client configuration that best matches the domain name
+// given in the query", the algorithm "chooses the client with the maximum number
+// of matching domain components", and where several clients share a domain name
+// they are tried "in sequence by ascending value of search_order", which is the
+// order field scutil prints.
+//
 // Everything here is a pure function of a parsed configuration, so a captured
 // machine state can be replayed in a test.
 package match
