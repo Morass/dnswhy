@@ -87,8 +87,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			usage(stdout)
 			return 2
 		}
-		fmt.Fprintf(stderr, "dnswhy: unknown flag %q\n", args[0])
-		return 2
+		// Flags before the name: dnswhy --json example.com
+		return explainCmd(args, stdout, stderr)
 	default:
 		// dnswhy <name> is the common case: no subcommand at all.
 		return explainCmd(args, stdout, stderr)
@@ -139,6 +139,18 @@ func needsValue(flagArg string) bool {
 	return false
 }
 
+// wantsHelp reports whether the user asked for help rather than mistyped a
+// flag: asking is not an error, so it prints on stdout and exits 0.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-h", "--help", "-help":
+			return true
+		}
+	}
+	return false
+}
+
 func newFlagSet(name string, stderr io.Writer, opts *options) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -174,6 +186,10 @@ func load(o options) (dnsconf.Config, resolverdir.Dir, hostsfile.File, error) {
 }
 
 func explainCmd(args []string, stdout, stderr io.Writer) int {
+	if wantsHelp(args) {
+		explainUsage(stdout)
+		return 0
+	}
 	var o options
 	fs := newFlagSet("explain", stderr, &o)
 	fs.Usage = func() { explainUsage(stderr) }
@@ -226,6 +242,10 @@ func explainCmd(args []string, stdout, stderr io.Writer) int {
 }
 
 func doctorCmd(args []string, stdout, stderr io.Writer) int {
+	if wantsHelp(args) {
+		doctorUsage(stdout)
+		return 0
+	}
 	var o options
 	fs := newFlagSet("doctor", stderr, &o)
 	fs.Usage = func() { doctorUsage(stderr) }
