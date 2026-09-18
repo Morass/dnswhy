@@ -17,6 +17,14 @@ while read -r e; do
 	esac
 done < <(git log --all --format='%ae%n%ce' | sort -u)
 
+# Files that belong to the toolchain that built this repository, not to the
+# repository: a template copied in during setup and never deleted.
+templates='(^|/)(screenshots-harness\.sh|README-skeleton\.md|review-claim\.md|private-patterns\.example|TEMPLATE\.md)$'
+tmpl=$(git ls-files | grep -E "$templates")
+[ -n "$tmpl" ] && { echo "$tmpl"; hit "build-process templates are tracked"; }
+tmplpast=$(git log --all --name-only --format= | sort -u | grep -E "$templates")
+[ -n "$tmplpast" ] && { echo "$tmplpast"; hit "build-process templates exist in history"; }
+
 agentfiles='(^|/)(AGENTS(\.override)?\.md|CLAUDE\.md|GEMINI\.md|\.cursorrules|copilot-instructions\.md)$|(^|/)\.(claude|cursor|agents)/'
 tracked=$(git ls-files | grep -E "$agentfiles")
 [ -n "$tracked" ] && { echo "$tracked"; hit "agent instruction files are tracked"; }
