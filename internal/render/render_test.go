@@ -73,7 +73,7 @@ func TestExplainShowsHostsFirst(t *testing.T) {
 
 func TestExplainSummarisesTheScopesItSkips(t *testing.T) {
 	out := explainText(t, "files.corp.internal", hostsfile.File{Path: "/etc/hosts"}, Style{})
-	if !strings.Contains(out, "other scope(s) claim names this one does not end in") {
+	if !strings.Contains(out, "claim names this one does not end in") {
 		t.Errorf("the scopes left out must be counted:\n%s", out)
 	}
 	if !strings.Contains(out, "other.example") {
@@ -181,5 +181,14 @@ func TestSingleLabelHeadingClaimsNoOrderItCannotSee(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "an entry in the hosts file") {
 		t.Errorf("the attempt that the hosts file covers should still say so:\n%s", buf.String())
+	}
+}
+
+func TestPluralReadsLikeEnglish(t *testing.T) {
+	if got := plural(1, "other scope"); got != "1 other scope" {
+		t.Errorf("plural = %q", got)
+	}
+	if got := plural(3, "Bonjour scope"); got != "3 Bonjour scopes" {
+		t.Errorf("plural = %q", got)
 	}
 }

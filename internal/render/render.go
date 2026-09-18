@@ -19,6 +19,14 @@ import (
 // window, a wide one and a file.
 const wrapWidth = 78
 
+// plural writes "1 scope" and "3 scopes".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // wrap breaks text into lines of at most width runes, on word boundaries. A
 // word longer than the width is left alone rather than cut in half.
 func wrap(text string, width int) []string {
@@ -149,19 +157,19 @@ func Explain(w io.Writer, e Explanation, st Style) {
 		var text string
 		switch {
 		case len(skipped) == 0:
-			text = fmt.Sprintf("(%d Bonjour scope(s) claim names this one does not end in)", bonjour)
+			text = fmt.Sprintf("(%s claim names this one does not end in)", plural(bonjour, "Bonjour scope"))
 		case bonjour == 0:
-			text = fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s)", n, strings.Join(skipped, ", "))
+			text = fmt.Sprintf("(%s claim names this one does not end in: %s)", plural(n, "other scope"), strings.Join(skipped, ", "))
 		default:
-			text = fmt.Sprintf("(%d other scope(s) claim names this one does not end in: %s, and %d Bonjour scopes)",
-				n, strings.Join(skipped, ", "), bonjour)
+			text = fmt.Sprintf("(%s claim names this one does not end in: %s, and %s)",
+				plural(n, "other scope"), strings.Join(skipped, ", "), plural(bonjour, "Bonjour scope"))
 		}
 		for _, line := range wrap(text, wrapWidth-2) {
 			fmt.Fprintf(w, "  %s\n", st.Dim(line))
 		}
 	}
 	if n := len(r.Ignored); n > 0 {
-		fmt.Fprintf(w, "  %s\n", st.Dim(fmt.Sprintf("(%d interface-bound resolver(s) not shown: they answer only interface-bound queries)", n)))
+		fmt.Fprintf(w, "  %s\n", st.Dim(fmt.Sprintf("(%s not shown: they answer only interface-bound queries)", plural(n, "interface-bound resolver"))))
 	}
 
 	if e.System != nil || len(e.Direct) > 0 {

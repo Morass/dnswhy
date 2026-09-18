@@ -73,11 +73,11 @@ whoever runs it. `--compare` asks it anyway, which is what a plain `dig` does:
 
 ```
   system  (every application)     198.51.100.9
-  asked 192.0.2.53 directly       NXDOMAIN  the nameserver says this name does not exist
+  asked 192.0.2.53 directly       no such name  this name does not exist (NXDOMAIN)
   asked 198.51.100.53 directly    198.51.100.9
 
   Your applications resolve this name (198.51.100.9) while a direct question to 192.0.2.53
-  returns nxdomain. The machine is fine; the tool you are testing with is looking
+  says it does not exist. The machine is fine; the tool you are testing with is looking
   in the wrong place.
 ```
 
